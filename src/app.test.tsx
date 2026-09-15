@@ -26,7 +26,10 @@ function findById(node: Renderable, id: string): Renderable | undefined {
   return undefined
 }
 
-
+async function paint(setup: { renderOnce: () => Promise<void> }) {
+  await Bun.sleep(20)
+  await setup.renderOnce()
+}
 
 test("test renderer can paint text", async () => {
   const setup = await testRender(() => (
@@ -114,23 +117,20 @@ test("arrow keys cycle focused panes", async () => {
     expect(setup.captureCharFrame()).not.toContain("kill")
 
     setup.mockInput.pressArrow("right")
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     let frame = setup.captureCharFrame()
     expect(frame).toContain("new")
     expect(frame).not.toContain("add")
     expect(frame).not.toContain("kill")
 
     setup.mockInput.pressArrow("right")
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     frame = setup.captureCharFrame()
     expect(frame).toContain("kill")
     expect(frame).not.toContain("add")
 
     setup.mockInput.pressArrow("left")
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     frame = setup.captureCharFrame()
     expect(frame).toContain("new")
     expect(frame).not.toContain("kill")
@@ -146,21 +146,18 @@ test("down focuses footer buttons and up returns to panes", async () => {
     await setup.renderOnce()
 
     setup.mockInput.pressArrow("down")
-    await Bun.sleep(20)
+    await paint(setup)
     setup.mockInput.pressEnter()
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     expect(setup.captureCharFrame()).toContain("add project")
 
     setup.mockInput.pressEscape()
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
 
     setup.mockInput.pressArrow("up")
-    await Bun.sleep(20)
+    await paint(setup)
     setup.mockInput.pressArrow("right")
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     const frame = setup.captureCharFrame()
     expect(frame).toContain("new")
     expect(frame).not.toContain("add")
@@ -177,8 +174,7 @@ test("footer actions follow the focused pane", async () => {
     const servers = findById(setup.renderer.root, "pane-servers")
     if (!servers) throw new Error("missing pane-servers")
     await setup.mockMouse.click(servers.x + 1, servers.y)
-    await Bun.sleep(20)
-    await setup.renderOnce()
+    await paint(setup)
     const frame = setup.captureCharFrame()
     expect(frame).toContain("projects")
     expect(frame).toContain("worktrees")
@@ -190,3 +186,102 @@ test("footer actions follow the focused pane", async () => {
     setup.renderer.destroy()
   }
 })
+
+async function openAddProjectModal(setup: {
+  mockInput: { pressArrow: (direction: "up" | "down" | "left" | "right") => void; pressEnter: () => void }
+  renderOnce: () => Promise<void>
+  captureCharFrame: () => string
+}) {
+  setup.mockInput.pressArrow("down")
+  await paint(setup)
+  setup.mockInput.pressEnter()
+  await paint(setup)
+  expect(setup.captureCharFrame()).toContain("add project")
+}
+
+test("up from panes focuses header, down returns through panes to footer", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+
+    setup.mockInput.pressArrow("up")
+    await paint(setup)
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("add project")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("modal down from the path field focuses submit", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    await openAddProjectModal(setup)
+
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("add project")
+    expect(setup.captureCharFrame()).toContain("path required")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("modal right from submit focuses cancel", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    await openAddProjectModal(setup)
+
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    setup.mockInput.pressArrow("right")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toContain("add project")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("modal left and right stay in the path field", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    await openAddProjectModal(setup)
+
+    setup.mockInput.pressArrow("left")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("add project")
+    expect(setup.captureCharFrame()).toContain("path required")
+
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    await openAddProjectModal(setup)
+
+    setup.mockInput.pressArrow("right")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("add project")
+    expect(setup.captureCharFrame()).toContain("path required")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+

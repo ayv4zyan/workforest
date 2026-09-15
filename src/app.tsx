@@ -27,7 +27,8 @@ import {
 import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
 type Pane = "projects" | "trees" | "servers"
-type FocusRow = "panes" | "footer"
+type FocusRow = "header" | "panes" | "footer"
+type ModalFocus = "input" | "submit" | "cancel"
 type FooterAction = {
   id: string
   label: string
@@ -52,7 +53,9 @@ export function App() {
   const renderer = useRenderer()
   const [pane, setPane] = createSignal<Pane>("projects")
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
+  const [headerIndex, setHeaderIndex] = createSignal(0)
   const [footerIndex, setFooterIndex] = createSignal(0)
+  const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
   const [projects, setProjects] = createSignal<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [trees, setTrees] = createSignal<TreeRow[]>([])
@@ -214,13 +217,30 @@ export function App() {
     setFooterIndex(0)
   }
 
+  function headerActions(): FooterAction[] {
+    return [
+      { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
+      { id: "btn-quit", label: "quit", onPress: quit },
+    ]
+  }
+
+  function cycleHeader(delta: number) {
+    const actions = headerActions()
+    const current = Math.min(headerIndex(), actions.length - 1)
+    setHeaderIndex((current + delta + actions.length) % actions.length)
+  }
+
+  function pressHeader() {
+    const actions = headerActions()
+    const action = actions[Math.min(headerIndex(), Math.max(0, actions.length - 1))]
+    action?.onPress()
+  }
+
   function footerActions(): FooterAction[] {
-    const refreshAction: FooterAction = { id: "btn-refresh", label: "refresh", onPress: () => refresh() }
     if (pane() === "projects") {
       return [
         { id: "btn-add", label: "add", onPress: openAddProject },
         { id: "btn-unregister", label: "unregister", disabled: !selectedProject(), onPress: openUnregister },
-        refreshAction,
       ]
     }
     if (pane() === "trees") {
@@ -237,12 +257,10 @@ export function App() {
           disabled: !tree,
           onPress: toggleServer,
         },
-        refreshAction,
       ]
     }
     return [
       { id: "btn-kill", label: "kill", variant: "danger", disabled: !selectedServer(), onPress: openKill },
-      refreshAction,
     ]
   }
 
@@ -260,9 +278,59 @@ export function App() {
     action.onPress()
   }
 
+  function cycleRow(delta: number) {
+    if (focusRow() === "header") cycleHeader(delta)
+    else if (focusRow() === "footer") cycleFooter(delta)
+    else cyclePane(delta)
+  }
+
+  function showModal(next: Modal) {
+    setModal(next)
+    setModalFocus("value" in next ? "input" : "submit")
+  }
+
+  function modalFocusables(): ModalFocus[] {
+    const current = modal()
+    if (!current) return []
+    return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
+  }
+
+  function cycleModalFocus(delta: number) {
+    const items = modalFocusables()
+    if (items.length === 0) return
+    const index = items.indexOf(modalFocus())
+    const start = index < 0 ? 0 : index
+    setModalFocus(items[(start + delta + items.length) % items.length]!)
+  }
+
+  function handleModalArrow(name: string, preventDefault: () => void) {
+    const current = modal()
+    if (!current) return
+    const hasInput = "value" in current
+    const focus = modalFocus()
+
+    if (hasInput && focus === "input") {
+      if (name === "down") {
+        preventDefault()
+        setModalFocus("submit")
+      }
+      return
+    }
+
+    preventDefault()
+    if (name === "up" && hasInput) {
+      setModalFocus("input")
+      return
+    }
+    if (name === "left" || name === "right") {
+      if (focus === "submit") setModalFocus("cancel")
+      else if (focus === "cancel") setModalFocus("submit")
+    }
+  }
+
   function openAddProject() {
     if (busy()) return
-    setModal({ kind: "add-project", value: "" })
+    showModal({ kind: "add-project", value: "" })
   }
 
   function openUnregister() {
@@ -271,7 +339,7 @@ export function App() {
       setStatus("no project selected")
       return
     }
-    setModal({ kind: "unregister" })
+    showModal({ kind: "unregister" })
   }
 
   function openNewTree() {
@@ -280,7 +348,7 @@ export function App() {
       setStatus("add a project first")
       return
     }
-    setModal({ kind: "new-tree", value: "" })
+    showModal({ kind: "new-tree", value: "" })
   }
 
   function openRename() {
@@ -290,7 +358,7 @@ export function App() {
       setStatus("pick a linked worktree to rename")
       return
     }
-    setModal({ kind: "rename", value: tree.displayName })
+    showModal({ kind: "rename", value: tree.displayName })
   }
 
   function openDelete() {
@@ -300,7 +368,7 @@ export function App() {
       setStatus("pick a linked worktree to delete")
       return
     }
-    setModal({ kind: "delete" })
+    showModal({ kind: "delete" })
   }
 
   function openKill() {
@@ -310,7 +378,7 @@ export function App() {
       setStatus("no server selected")
       return
     }
-    setModal({ kind: "kill" })
+    showModal({ kind: "kill" })
   }
 
   function cancelModal() {
@@ -360,9 +428,23 @@ export function App() {
         cancelModal()
         return
       }
+      if (key.name === "tab") {
+        key.preventDefault()
+        cycleModalFocus(key.shift ? -1 : 1)
+        return
+      }
+      if (key.name === "left" || key.name === "right" || key.name === "up" || key.name === "down") {
+        handleModalArrow(key.name, () => key.preventDefault())
+        return
+      }
       if (key.name === "return" || key.name === "enter") {
-        const kind = modal()?.kind
-        if (kind === "delete" || kind === "unregister" || kind === "kill") confirmModal()
+        if (modalFocus() === "cancel") {
+          key.preventDefault()
+          cancelModal()
+        } else if (modalFocus() === "submit") {
+          key.preventDefault()
+          acceptModal()
+        }
       }
       return
     }
@@ -375,38 +457,43 @@ export function App() {
       return
     }
     if (key.name === "tab") {
-      if (focusRow() === "footer") cycleFooter(key.shift ? -1 : 1)
-      else cyclePane(key.shift ? -1 : 1)
+      cycleRow(key.shift ? -1 : 1)
       return
     }
     if (key.name === "left") {
-      if (focusRow() === "footer") cycleFooter(-1)
-      else cyclePane(-1)
+      cycleRow(-1)
       return
     }
     if (key.name === "right") {
-      if (focusRow() === "footer") cycleFooter(1)
-      else cyclePane(1)
+      cycleRow(1)
       return
     }
     if (key.name === "down") {
       key.preventDefault()
-      if (focusRow() !== "footer") {
+      if (focusRow() === "header") setFocusRow("panes")
+      else if (focusRow() === "panes") {
         setFocusRow("footer")
         setFooterIndex(0)
       }
       return
     }
     if (key.name === "up") {
-      if (focusRow() === "footer") {
-        key.preventDefault()
-        setFocusRow("panes")
+      key.preventDefault()
+      if (focusRow() === "footer") setFocusRow("panes")
+      else if (focusRow() === "panes") {
+        setFocusRow("header")
+        setHeaderIndex(0)
       }
       return
     }
-    if ((key.name === "return" || key.name === "enter") && focusRow() === "footer") {
-      key.preventDefault()
-      pressFooter()
+    if (key.name === "return" || key.name === "enter") {
+      if (focusRow() === "footer") {
+        key.preventDefault()
+        pressFooter()
+      } else if (focusRow() === "header") {
+        key.preventDefault()
+        pressHeader()
+      }
       return
     }
     if (busy()) return
@@ -431,8 +518,8 @@ export function App() {
       return
     }
     if (key.name === "k") {
+      if (focusRow() === "panes" && pane() !== "servers") return
       openKill()
-      return
     }
   })
 
@@ -619,16 +706,37 @@ export function App() {
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
       <box height={3} zIndex={2} paddingLeft={1} paddingRight={1} flexDirection="row" alignItems="center" justifyContent="space-between" backgroundColor={theme.header}>
         <text fg={theme.accent} selectable={false}>Workforest</text>
-        <ActionButton id="btn-quit" label="quit" onPress={quit} />
+        <box
+          flexDirection="row"
+          gap={1}
+          onMouseDown={() => {
+            if (!modal()) setFocusRow("header")
+          }}
+        >
+          <For each={headerActions()}>
+            {(action, index) => (
+              <ActionButton
+                id={action.id}
+                label={action.label}
+                active={focusRow() === "header" && headerIndex() === index()}
+                onPress={() => {
+                  setFocusRow("header")
+                  setHeaderIndex(index())
+                  action.onPress()
+                }}
+              />
+            )}
+          </For>
+        </box>
       </box>
 
       <box flexGrow={1} flexDirection="row">
           <box
             width={28}
             border
-            borderColor={pane() === "projects" ? theme.borderFocus : theme.border}
+            borderColor={pane() === "projects" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             title={`projects (${projects().length})`}
-            titleColor={pane() === "projects" ? theme.accent : theme.muted}
+            titleColor={pane() === "projects" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
               if (!modal()) focusPane("projects")
@@ -698,9 +806,9 @@ export function App() {
             id="pane-trees"
             flexGrow={1}
             border
-            borderColor={pane() === "trees" ? theme.borderFocus : theme.border}
+            borderColor={pane() === "trees" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             title={`worktrees (${trees().length})`}
-            titleColor={pane() === "trees" ? theme.accent : theme.muted}
+            titleColor={pane() === "trees" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
               if (!modal()) focusPane("trees")
@@ -749,9 +857,9 @@ export function App() {
             id="pane-servers"
             width={36}
             border
-            borderColor={pane() === "servers" ? theme.borderFocus : theme.border}
+            borderColor={pane() === "servers" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             title={`servers (${treeServers().length})`}
-            titleColor={pane() === "servers" ? theme.accent : theme.muted}
+            titleColor={pane() === "servers" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
               if (!modal()) focusPane("servers")
@@ -841,56 +949,75 @@ export function App() {
         </box>
       </box>
 
-      {modal() ? (
-        <box
-          position="absolute"
-          left={8}
-          right={8}
-          top={6}
-          height={12}
-          zIndex={20}
-          border
-          borderColor={theme.accent}
-          title={modalTitle(modal()!)}
-          titleColor={theme.accent}
-          backgroundColor={theme.header}
-          padding={1}
-          flexDirection="column"
-          gap={1}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          <text fg={theme.text} selectable={false}>{modalBody(modal()!)}</text>
-          {"value" in modal()! ? (
-            <input
-              focused
-              value={modalValue(modal()!)}
-              placeholder={modalPlaceholder(modal()!)}
-              width="100%"
-              backgroundColor={theme.panel}
-              focusedBackgroundColor="#21262d"
-              textColor={theme.text}
-              cursorColor={theme.accent}
-              onInput={(value) => {
-                const now = modal()
-                if (now && "value" in now) setModal({ ...now, value, error: undefined })
-              }}
-              onSubmit={() => {
-                const now = modal()
-                if (now && "value" in now) submitModal(now.value)
-              }}
-            />
-          ) : (
-            <text fg={theme.muted} selectable={false}>click confirm or cancel</text>
-          )}
-          <text fg={theme.danger} selectable={false}>{modalError(modal()!) ?? ""}</text>
-          <box flexDirection="row" gap={1}>
-            <ActionButton id="btn-submit" label={"value" in modal()! ? "submit" : "confirm"} variant="accent" onPress={acceptModal} />
-            <ActionButton id="btn-cancel" label="cancel" onPress={cancelModal} />
+      <Show when={modal()} fallback={<box width={0} height={0} />}>
+        {(current) => (
+          <box
+            position="absolute"
+            left={8}
+            right={8}
+            top={6}
+            height={12}
+            zIndex={20}
+            border
+            borderColor={theme.accent}
+            title={modalTitle(current())}
+            titleColor={theme.accent}
+            backgroundColor={theme.header}
+            padding={1}
+            flexDirection="column"
+            gap={1}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <text fg={theme.text} selectable={false}>{modalBody(current())}</text>
+            {"value" in current() ? (
+              <input
+                id="modal-input"
+                focused={modalFocus() === "input"}
+                value={modalValue(current())}
+                placeholder={modalPlaceholder(current())}
+                width="100%"
+                backgroundColor={theme.panel}
+                focusedBackgroundColor="#21262d"
+                textColor={theme.text}
+                cursorColor={theme.accent}
+                onMouseDown={() => setModalFocus("input")}
+                onInput={(value) => {
+                  const now = modal()
+                  if (now && "value" in now) setModal({ ...now, value, error: undefined })
+                }}
+                onSubmit={() => {
+                  const now = modal()
+                  if (now && "value" in now) submitModal(now.value)
+                }}
+              />
+            ) : (
+              <text fg={theme.muted} selectable={false}>confirm or cancel</text>
+            )}
+            <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
+            <box flexDirection="row" gap={1}>
+              <ActionButton
+                id="btn-submit"
+                label={"value" in current() ? "submit" : "confirm"}
+                variant="accent"
+                active={modalFocus() === "submit"}
+                onPress={() => {
+                  setModalFocus("submit")
+                  acceptModal()
+                }}
+              />
+              <ActionButton
+                id="btn-cancel"
+                label="cancel"
+                active={modalFocus() === "cancel"}
+                onPress={() => {
+                  setModalFocus("cancel")
+                  cancelModal()
+                }}
+              />
+            </box>
           </box>
-        </box>
-      ) : (
-        <box width={0} height={0} />
-      )}
+        )}
+      </Show>
     </box>
   )
 }

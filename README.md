@@ -15,29 +15,32 @@ bun start
 
 Every action has a click target. Keyboard shortcuts still work.
 
-- Click **quit** in the header.
+- Click **refresh** / **quit** in the header.
 - Click a list row to select it. Click the same row again to activate it (open trees, start/stop, or kill).
 - Scroll the wheel over a list to move the selection.
 - The three panes are **projects**, **worktrees**, and **servers**. Servers always belong to the selected worktree.
-- The bottom bar follows the focused pane: projects gets **add**, **unregister**; worktrees gets **new**, **rename**, **delete**, **start**/**stop**; servers gets **kill**. **refresh** is always there.
+- The bottom bar follows the focused pane: projects gets **add**, **unregister**; worktrees gets **new**, **rename**, **delete**, **start**/**stop**; servers gets **kill**.
 - Dialogs have **submit**/**confirm** and **cancel**. Click the input to type.
 
 ## Keys
 
+Arrow keys move spatially. The shell is three rows: header (`refresh` / `quit`), the project / worktree / server panes, then footer actions. Dialogs use the same idea: the text field, then `submit` / `confirm` and `cancel`.
+
 | Key | Action |
 | --- | --- |
-| `tab` / `shift+tab` | Next / previous pane, or next / previous footer button |
-| `←` / `→` | Previous / next pane, or previous / next footer button |
-| `↓` | Move to the footer buttons |
-| `↑` | Return to the project / worktree / server panes |
+| `tab` / `shift+tab` | Next / previous control in the current row, or in a dialog |
+| `←` / `→` | Previous / next pane, header button, footer button, or dialog button. In a dialog text field, move the cursor |
+| `↓` | Header → panes → footer. In a dialog, the text field → submit |
+| `↑` | Footer → panes → header. In a dialog, buttons → text field |
 | `a` | Register a project (path to the main checkout) |
 | `n` | New worktree (directory name = branch name) |
 | `r` | Rename directory and branch |
 | `d` | Delete linked worktree |
 | `u` | Unregister project (does not delete trees) |
-| `enter` | Activate the focused list item, or press the focused footer button |
+| `enter` | Activate the focused list item, header / footer / dialog button, or submit the dialog field |
+| `esc` | Close the open dialog |
 | `j` / `k` | Move down / up in the focused list |
-| `k` | Kill the selected server |
+| `k` | Kill the selected server (servers pane) |
 | `g` | Refresh |
 | `q` | Quit |
 
