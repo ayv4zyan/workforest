@@ -47,6 +47,17 @@ export function addProject(home: string, rawPath: string, name?: string): Projec
   return project
 }
 
+export function setProjectStartCommand(home: string, projectId: string, rawCommand: string): Project {
+  const startCommand = rawCommand.trim()
+  if (!startCommand) throw new Error("command required")
+  const config = loadConfig(home)
+  const project = config.projects.find((row) => row.id === projectId)
+  if (!project) throw new Error(`Unknown project "${projectId}"`)
+  project.startCommand = startCommand
+  saveConfig(home, config)
+  return project
+}
+
 export function removeProject(home: string, projectId: string): void {
   const config = loadConfig(home)
   const next = config.projects.filter((project) => project.id !== projectId)

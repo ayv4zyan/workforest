@@ -3,6 +3,7 @@ export type Project = {
   name: string
   path: string
   basePort: number
+  startCommand?: string
 }
 
 export type Config = {

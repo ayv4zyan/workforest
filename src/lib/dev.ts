@@ -45,3 +45,16 @@ export function spawnCommand(target: DevTarget, port: number): string[] {
   const extras = target.extraArgs.map((part) => (part === "PORT" ? String(port) : part))
   return ["bun", "run", target.script, ...extras]
 }
+
+export function spawnCustomCommand(repoRoot: string, command: string, port: number): string[] {
+  // Only infer flags for a simple Bun script invocation. Shell expressions and
+  // wrapper scripts can use $PORT explicitly without having arguments changed.
+  const invocation = command.match(/^bun\s+(?:run\s+)?([\w:@./-]+)((?:\s+[\w:@./=,-]+)*)$/)
+  const script = invocation?.[1] && readPkg(join(repoRoot, "package.json"))?.scripts?.[invocation[1]]
+  if (script && /^\s*(?:vite(?:\s|$)|next\s+(?:dev|start)(?:\s|$))/.test(script)) {
+    const args = extraArgsForScript(script).slice(1).map((arg) => arg === "PORT" ? String(port) : arg)
+    const suppliedArgs = invocation![2]!.trim().split(/\s+/).filter((arg) => arg && arg !== "--")
+    return ["bun", "run", invocation![1]!, ...suppliedArgs, ...args]
+  }
+  return ["/bin/sh", "-c", command]
+}

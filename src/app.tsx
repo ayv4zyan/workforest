@@ -5,7 +5,7 @@ import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
 import { nextIndex, pickSelectIndex } from "./lib/select-hit.ts"
 import { ActionButton } from "./ui/button.tsx"
-import { addProject, loadConfig, removeProject } from "./lib/config.ts"
+import { addProject, loadConfig, removeProject, setProjectStartCommand } from "./lib/config.ts"
 import { setupWorktreeDeps } from "./lib/deps.ts"
 import {
   createWorktree,
@@ -32,7 +32,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "footer"
 type ModalFocus = "input" | "submit" | "cancel" | "manual" | "auto"
-type FooterAction = {
+type Action = {
   id: string
   label: string
   variant?: "accent" | "danger"
@@ -50,6 +50,7 @@ type Modal =
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
   | { kind: "stop"; rows: ServerRow[] }
+  | { kind: "start-command"; value: string; error?: string; project: Project; tree?: GitWorktree }
   | { kind: "start"; value: string; error?: string; project: Project; tree: GitWorktree }
   | { kind: "logs"; text: string }
 
@@ -207,9 +208,20 @@ export function App() {
     setFooterIndex(0)
   }
 
-  function headerActions(): FooterAction[] {
+  function headerActions(): Action[] {
+    const serverActions: Action[] = selectedTree() ? [
+      {
+        id: "btn-start",
+        label: activeServers().length > 0 ? "■" : "▶",
+        variant: activeServers().length > 0 ? "danger" : "accent",
+        disabled: busy(),
+        onPress: toggleServer,
+      },
+      { id: "btn-logs", label: "logs", disabled: !treeServers().some((row) => row.logPath), onPress: openLogs },
+    ] : []
     return [
       { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
+      ...serverActions,
       ...(busy() && renameRequest ? [{ id: "btn-cancel-generation", label: "cancel rename", onPress: () => renameRequest?.abort() }] : []),
       { id: "btn-quit", label: "quit", onPress: quit },
     ]
@@ -224,13 +236,15 @@ export function App() {
   function pressHeader() {
     const actions = headerActions()
     const action = actions[Math.min(headerIndex(), Math.max(0, actions.length - 1))]
-    action?.onPress()
+    if (!action || action.disabled) return
+    action.onPress()
   }
 
-  function footerActions(): FooterAction[] {
+  function footerActions(): Action[] {
     if (pane() === "projects") {
       return [
         { id: "btn-add", label: "add", onPress: openAddProject },
+        { id: "btn-command", label: "command", disabled: !selectedProject() || busy(), onPress: openStartCommand },
         { id: "btn-unregister", label: "unregister", disabled: !selectedProject(), onPress: openUnregister },
       ]
     }
@@ -241,14 +255,6 @@ export function App() {
         { id: "btn-new", label: "new", disabled: !selectedProject(), onPress: openNewTree },
         { id: "btn-rename", label: "rename", disabled: !linked, onPress: openRename },
         { id: "btn-delete", label: "delete", variant: "danger", disabled: !linked, onPress: openDelete },
-        {
-          id: "btn-start",
-          label: activeServers().length > 0 ? "stop" : "start",
-          variant: "accent",
-          disabled: !tree,
-          onPress: toggleServer,
-        },
-        { id: "btn-logs", label: "logs", disabled: !treeServers().some((row) => row.logPath), onPress: openLogs },
       ]
     }
     return []
@@ -581,6 +587,14 @@ export function App() {
     if (!current) return
     const value = raw.trim()
     try {
+      if (current.kind === "start-command") {
+        const project = setProjectStartCommand(dataDir(), current.project.id, value)
+        setProjects(loadConfig(dataDir()).projects)
+        if (current.tree) openStartPort(project, current.tree)
+        else setModal(null)
+        setStatus(`saved start command for ${project.name}`)
+        return
+      }
       if (current.kind === "start") {
         if (!/^\d+$/.test(value)) throw new Error("Enter a whole port number from 1024 to 65535")
         const record = startServer({
@@ -700,6 +714,20 @@ export function App() {
       else stopRows(running)
       return
     }
+    if (!project.startCommand?.trim()) {
+      showModal({ kind: "start-command", value: "", project, tree })
+      return
+    }
+    openStartPort(project, tree)
+  }
+
+  function openStartCommand() {
+    const project = selectedProject()
+    if (!project || busy()) return
+    showModal({ kind: "start-command", value: project.startCommand ?? "", project })
+  }
+
+  function openStartPort(project: Project, tree: GitWorktree) {
     const preferred = loadPorts(dataDir())[tree.path]
     const port = preferred ?? pickPort(servers().filter((row) => row.state !== "failed").map((row) => row.port), undefined, project.basePort)
     showModal({ kind: "start", value: String(port), project, tree })
@@ -723,6 +751,8 @@ export function App() {
         return "unregister project"
       case "stop":
         return "stop servers"
+      case "start-command":
+        return "project start command"
       case "start":
         return "start server"
       case "logs":
@@ -749,8 +779,10 @@ export function App() {
       }
       case "unregister":
         return `Remove ${selectedProject()?.name ?? "this project"} from the list? Worktrees stay on disk.`
+      case "start-command":
+        return "Start command (e.g. bun local). Saved for all project worktrees; runs from the selected worktree."
       case "start":
-        return "Port (1024–65535). Uses the worktree’s detected dev script."
+        return `Port (1024–65535). Command: ${current.project.startCommand}`
       case "logs":
         return "Recent output"
       case "stop":
@@ -759,6 +791,7 @@ export function App() {
   }
 
   function modalPlaceholder(current: Modal): string {
+    if (current.kind === "start-command") return "bun local"
     if (current.kind === "add-project") return "~/Projects/Cras"
     if (current.kind === "new-tree" || current.kind === "rename") return "feat-auth"
     return ""
@@ -788,6 +821,8 @@ export function App() {
               <ActionButton
                 id={action.id}
                 label={action.label}
+                variant={action.variant}
+                disabled={action.disabled}
                 active={focusRow() === "header" && headerIndex() === index()}
                 onPress={() => {
                   setFocusRow("header")

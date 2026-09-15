@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
 import type { Renderable } from "@opentui/core"
-import { addProject } from "./lib/config.ts"
+import { addProject, loadConfig } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
 import { collectServers, stopServer, loadRunRecords } from "./lib/servers.ts"
 import { rememberPort } from "./lib/ports.ts"
@@ -183,7 +183,8 @@ test("footer actions follow the focused pane", async () => {
     expect(frame).toContain("projects")
     expect(frame).toContain("worktrees")
     expect(frame).not.toContain("servers")
-    expect(frame).toContain("start")
+    expect(findById(setup.renderer.root, "btn-start")).toBeUndefined()
+    expect(findById(setup.renderer.root, "btn-logs")).toBeUndefined()
     expect(frame).toContain("refresh")
     expect(frame).not.toContain("add")
   } finally {
@@ -350,7 +351,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
   }
 })
 
-test("worktree start asks for a remembered port, shows running status and logs, and stops", async () => {
+test("worktree start saves a custom project command, remembers it, shows logs, and stops", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-server-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -361,7 +362,7 @@ test("worktree start asks for a remembered port, shows running status and logs, 
   gitOk(repo, ["config", "user.email", "wf@test"])
   gitOk(repo, ["config", "user.name", "wf"])
   gitOk(repo, ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
-  writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { dev: "bun server.ts" } }))
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { local: "bun server.ts" } }))
   writeFileSync(join(repo, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") }); console.log("server ready")')
   const project = addProject(home, repo)
   let external: ReturnType<typeof Bun.spawn> | undefined
@@ -372,16 +373,31 @@ test("worktree start asks for a remembered port, shows running status and logs, 
   const click = async (id: string) => {
     const node = findById(setup.renderer.root, id)
     expect(node).toBeTruthy()
-    await setup.mockMouse.click(node!.x + 2, node!.y + 1)
+    await setup.mockMouse.click(node!.x + 2, node!.y + Math.floor(node!.height / 2))
     await paint(setup)
   }
   try {
     await paint(setup)
     expect(setup.captureCharFrame()).toContain("Stopped")
+    expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("▶")
+    const refreshButton = findById(setup.renderer.root, "btn-refresh")!
+    expect(findById(setup.renderer.root, "btn-start")!.y).toBe(refreshButton.y)
+    expect(findById(setup.renderer.root, "btn-logs")!.y).toBe(refreshButton.y)
+    const footer = findById(setup.renderer.root, "footer-actions")!
+    expect(findById(footer, "btn-start")).toBeUndefined()
+    expect(findById(footer, "btn-logs")).toBeUndefined()
     expect(findById(setup.renderer.root, "pane-servers")).toBeUndefined()
     setup.mockInput.pressArrow("right")
     await paint(setup)
     await click("btn-start")
+    expect(setup.captureCharFrame()).toContain("start command")
+    await click("btn-submit")
+    expect(setup.captureCharFrame()).toContain("command required")
+    await click("modal-input")
+    await setup.mockInput.typeText("bun local")
+    await paint(setup)
+    await click("btn-submit")
+    expect(loadConfig(home).projects[0]?.startCommand).toBe("bun local")
     expect(setup.captureCharFrame()).toContain("start server")
     expect(setup.captureCharFrame()).toContain(String(port))
     await click("btn-submit")
@@ -396,6 +412,7 @@ test("worktree start asks for a remembered port, shows running status and logs, 
       if (setup.captureCharFrame().includes("Running")) break
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
+    expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("■")
     expect(setup.captureCharFrame()).not.toContain("2 servers")
     setup.mockInput.pressArrow("down")
     await paint(setup)

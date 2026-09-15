@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { parseLsofCwd, parseLsofListen, worktreeForCwd, serverStatus, startServer, loadRunRecords } from "./servers.ts"
+import { parseLsofCwd, parseLsofListen, worktreeForCwd, serverStatus, startServer, loadRunRecords, stopServer } from "./servers.ts"
 import { pickPort } from "./ports.ts"
-import { extraArgsForScript, resolveDevTarget, spawnCommand } from "./dev.ts"
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { extraArgsForScript, resolveDevTarget, spawnCommand, spawnCustomCommand } from "./dev.ts"
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { GitWorktree } from "./types.ts"
@@ -112,5 +112,79 @@ test("explicit ports are validated and occupied ports are rejected", () => {
   } finally {
     listener.stop(true)
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("saved project command runs from a linked worktree with the chosen port", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-command-"))
+  const main = join(root, "main")
+  const linked = join(root, "linked tree")
+  mkdirSync(main)
+  mkdirSync(linked)
+  writeFileSync(join(linked, "package.json"), JSON.stringify({ scripts: { local: "bun server.ts" } }))
+  writeFileSync(join(linked, "server.ts"), 'Bun.serve({port: Number(process.env.PORT), fetch: () => new Response("linked command")})')
+  const home = join(root, "home")
+  const project = { id: "p", name: "p", path: main, basePort: 5173, startCommand: "bun local" }
+  const tree: GitWorktree = { path: linked, head: "a", branch: "feature", bare: false, detached: false, locked: false, prunable: false, isMain: false }
+  let record: ReturnType<typeof startServer> | undefined
+  try {
+    record = startServer({ home, project, worktree: tree, usedPorts: [] })
+    let response = ""
+    for (let i = 0; i < 40; i++) {
+      try { response = await (await fetch(`http://127.0.0.1:${record.port}`)).text() } catch {}
+      if (response === "linked command") break
+      await Bun.sleep(25)
+    }
+    expect(response).toBe("linked command")
+    expect(record.worktreePath).toBe(linked)
+  } finally {
+    if (record) stopServer(home, { ...record, command: "bun local", owned: true })
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("bun local forwards the chosen port to Vite instead of relying on PORT", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-vite-port-"))
+  const home = join(root, "home")
+  const bin = join(root, "node_modules", ".bin")
+  mkdirSync(bin, { recursive: true })
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { local: "vite --host 127.0.0.1" } }))
+  // A CLI that, like Vite, takes its port from arguments rather than PORT.
+  writeFileSync(join(bin, "vite"), `#!${process.execPath}
+const args = process.argv.slice(2)
+const index = args.lastIndexOf("--port")
+const server = Bun.serve({port: index < 0 ? 0 : Number(args[index + 1]), fetch: () => new Response("vite fixture")})
+await Bun.write("actual-port.json", JSON.stringify({port: server.port, args}))
+`)
+  chmodSync(join(bin, "vite"), 0o755)
+  const tree: GitWorktree = { path: root, head: "a", branch: "main", bare: false, detached: false, locked: false, prunable: false, isMain: true }
+  let record: ReturnType<typeof startServer> | undefined
+  try {
+    record = startServer({home, project: {id: "p", name: "p", path: root, basePort: 5173, startCommand: "bun local"}, worktree: tree, usedPorts: []})
+    let actual: {port: number; args: string[]} | undefined
+    for (let i = 0; i < 40; i++) {
+      try { actual = JSON.parse(readFileSync(join(root, "actual-port.json"), "utf8")); break } catch {}
+      await Bun.sleep(25)
+    }
+    expect(actual?.port).toBe(record.port)
+    expect(actual?.args).toContain("--strictPort")
+    expect(await (await fetch(`http://127.0.0.1:${record.port}`)).text()).toBe("vite fixture")
+  } finally {
+    if (record) stopServer(home, { ...record, command: "bun local", owned: true })
+    rmSync(root, {recursive: true, force: true})
+  }
+})
+
+test("custom port flags preserve script options and leave shell commands intact", () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-command-args-"))
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: {local: "vite --host 0.0.0.0", web: "next dev", wrapped: "bun scripts/local-vite.ts"} }))
+  try {
+    expect(spawnCustomCommand(root, "bun run local --mode stage", 3002)).toEqual(["bun", "run", "local", "--mode", "stage", "--port", "3002", "--strictPort"])
+    expect(spawnCustomCommand(root, "bun web", 3002)).toEqual(["bun", "run", "web", "-p", "3002"])
+    for (const command of ['bun wrapped', 'bun local && echo ready', 'bun local --port "$PORT"']) {
+      expect(spawnCustomCommand(root, command, 3002)).toEqual(["/bin/sh", "-c", command])
+    }
+  } finally {
+    rmSync(root, {recursive: true, force: true})
   }
 })

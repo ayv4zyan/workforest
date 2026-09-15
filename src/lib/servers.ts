@@ -13,7 +13,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path"
 import { exec } from "./exec.ts"
 import { logsDir, runDir } from "./home.ts"
-import { resolveDevTarget, spawnCommand } from "./dev.ts"
+import { resolveDevTarget, spawnCommand, spawnCustomCommand } from "./dev.ts"
 import { forgetPort, loadPorts, pickPort, rememberPort } from "./ports.ts"
 import type { GitWorktree, Listener, Project, RunRecord, ServerRow } from "./types.ts"
 
@@ -211,8 +211,9 @@ export function startServer(opts: {
   )
   if (existing) return existing
 
-  const target = resolveDevTarget(worktree.path)
-  if (!target) throw new Error("No bun/js dev script found in this worktree")
+  const startCommand = project.startCommand?.trim()
+  const target = startCommand ? null : resolveDevTarget(worktree.path)
+  if (!startCommand && !target) throw new Error("No dev script found. Set a start command for this project.")
 
   const preferred = loadPorts(home)[worktree.path]
   const taken = new Set([...usedPorts, ...listListeners().map((listener) => listener.port)])
@@ -221,14 +222,14 @@ export function startServer(opts: {
     throw new Error("Enter a whole port number from 1024 to 65535")
   }
   if (taken.has(port)) throw new Error(`Port ${port} is already in use. Choose another port.`)
-  const command = spawnCommand(target, port)
+  const command = startCommand ? spawnCustomCommand(worktree.path, startCommand, port) : spawnCommand(target!, port)
   const logPath = join(logsDir(home), project.id, `${basename(worktree.path)}.log`)
   mkdirSync(dirname(logPath), { recursive: true })
   const logFd = openSync(logPath, "a")
   let proc: ReturnType<typeof Bun.spawn>
   try {
     proc = Bun.spawn(command, {
-      cwd: target.cwd,
+      cwd: target?.cwd ?? worktree.path,
       env: {
         ...process.env,
         PORT: String(port),
