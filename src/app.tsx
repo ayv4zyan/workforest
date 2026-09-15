@@ -31,11 +31,12 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "pane-actions"
-type RowMenu = { pane: Pane; x: number; y: number }
-type ModalFocus = "input" | "submit" | "cancel" | "manual" | "auto"
+type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
+type ModalFocus = "input" | "submit" | "cancel"
 type Action = {
   id: string
   label: string
+  trailingLabel?: string
   variant?: "accent" | "danger"
   disabled?: boolean
   onPress: () => void
@@ -44,7 +45,6 @@ type Action = {
 const panes: Pane[] = ["projects", "trees"]
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
-  | { kind: "rename-choice" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
   | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
@@ -62,6 +62,7 @@ export function App() {
   const dimensions = useTerminalDimensions()
   const [menu, setMenu] = createSignal<RowMenu | null>(null)
   const [menuIndex, setMenuIndex] = createSignal(0)
+  const [submenuIndex, setSubmenuIndex] = createSignal(0)
   const [projectListHeight, setProjectListHeight] = createSignal(0)
   const [treeListHeight, setTreeListHeight] = createSignal(0)
   let projectList: SelectRenderable | undefined
@@ -256,7 +257,7 @@ export function App() {
     const tree = selectedTree()
     const linked = Boolean(tree && !tree.isMain) && !busy()
     return [
-      { id: "btn-rename", label: "Rename", disabled: !linked, onPress: openRename },
+      { id: "btn-rename", label: "Rename", trailingLabel: "›", disabled: !linked, onPress: openRenameSubmenu },
       { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
     ]
   }
@@ -277,12 +278,38 @@ export function App() {
       ? selectedRowTop(projectIndex(), projects().length, projectListHeight())
       : selectedRowTop(treeIndex(), trees().length, treeListHeight())
     setMenuIndex(0)
-    setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row })
+    setSubmenuIndex(0)
+    setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
+  }
+
+  function openRenameSubmenu() {
+    const current = menu()
+    if (!current || current.pane !== "trees" || menuActions()[0]?.disabled) return
+    setMenu({ ...current, renameOpen: true })
+    setSubmenuIndex(0)
+  }
+
+  function submenuActions(): Action[] {
+    return [
+      { id: "btn-manual-rename", label: "Manual", onPress: openManualRename },
+      { id: "btn-auto-rename", label: "Auto", disabled: !selectedTree()?.branch, onPress: () => void autoRename() },
+    ]
+  }
+
+  function pressSubmenu(index = submenuIndex()) {
+    const action = submenuActions()[index]
+    if (!action || action.disabled) return
+    setMenu(null)
+    action.onPress()
   }
 
   function pressMenu(index = menuIndex()) {
     const action = menuActions()[index]
     if (!action || action.disabled) return
+    if (menu()?.pane === "trees" && index === 0) {
+      openRenameSubmenu()
+      return
+    }
     setMenu(null)
     action.onPress()
   }
@@ -301,13 +328,12 @@ export function App() {
   function showModal(next: Modal) {
     setMenu(null)
     setModal(next)
-    setModalFocus(next.kind === "rename-choice" ? "manual" : "value" in next ? "input" : "submit")
+    setModalFocus("value" in next ? "input" : "submit")
   }
 
   function modalFocusables(): ModalFocus[] {
     const current = modal()
     if (!current) return []
-    if (current.kind === "rename-choice") return selectedTree()?.branch ? ["manual", "auto"] : ["manual"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
 
@@ -322,11 +348,6 @@ export function App() {
   function handleModalArrow(name: string, preventDefault: () => void) {
     const current = modal()
     if (!current) return
-    if (current.kind === "rename-choice") {
-      preventDefault()
-      cycleModalFocus(name === "left" || name === "up" ? -1 : 1)
-      return
-    }
     const hasInput = "value" in current
     const focus = modalFocus()
 
@@ -374,16 +395,12 @@ export function App() {
 
   function openRename() {
     if (busy()) return
-    if (modal()?.kind === "rename-choice") {
-      cancelModal()
-      return
-    }
     const tree = selectedTree()
     if (!tree || tree.isMain) {
       setStatus("pick a linked worktree to rename")
       return
     }
-    showModal({ kind: "rename-choice" })
+    openManualRename()
   }
 
   function openManualRename() {
@@ -394,7 +411,7 @@ export function App() {
   }
 
   async function autoRename() {
-    if (busy() || (modal() && modal()?.kind !== "rename-choice")) return
+    if (busy() || modal()) return
     const project = selectedProject()
     const tree = selectedTree()
     if (!project || !tree || tree.isMain || !tree.branch) {
@@ -453,11 +470,6 @@ export function App() {
       cancelModal()
       return
     }
-    if (current.kind === "rename-choice") {
-      if (modalFocus() === "auto") void autoRename()
-      else openManualRename()
-      return
-    }
     if ("value" in current) {
       submitModal(current.value)
       return
@@ -497,11 +509,21 @@ export function App() {
     }
     if (menu()) {
       key.preventDefault()
+      if (menu()?.renameOpen) {
+        if (key.name === "escape" || key.name === "left") {
+          setMenu((current) => current ? { ...current, renameOpen: false } : null)
+        } else if (["up", "down", "tab"].includes(key.name)) {
+          const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
+          setSubmenuIndex((submenuIndex() + delta + submenuActions().length) % submenuActions().length)
+        } else if (["return", "enter"].includes(key.name)) pressSubmenu()
+        return
+      }
       if (key.name === "escape") setMenu(null)
       else if (["up", "down", "tab"].includes(key.name)) {
         const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
         setMenuIndex((menuIndex() + delta + menuActions().length) % menuActions().length)
-      } else if (["return", "enter"].includes(key.name)) pressMenu()
+      } else if (key.name === "right" && menu()?.pane === "trees" && menuIndex() === 0) openRenameSubmenu()
+      else if (["return", "enter"].includes(key.name)) pressMenu()
       return
     }
     if (key.name === "escape" && renameRequest) {
@@ -533,7 +555,7 @@ export function App() {
         if (modalFocus() === "cancel") {
           key.preventDefault()
           cancelModal()
-        } else if (["submit", "manual", "auto"].includes(modalFocus())) {
+        } else if (modalFocus() === "submit") {
           key.preventDefault()
           acceptModal()
         }
@@ -776,7 +798,6 @@ export function App() {
         return "add project"
       case "new-tree":
         return "new worktree"
-      case "rename-choice":
       case "rename":
         return "rename worktree"
       case "delete":
@@ -800,8 +821,6 @@ export function App() {
         return "Path to the main checkout"
       case "new-tree":
         return "Name is used for the directory and the branch"
-      case "rename-choice":
-        return "Choose how to name this worktree"
       case "rename":
         return "Renames the directory and the branch"
       case "delete": {
@@ -1040,16 +1059,37 @@ export function App() {
             onMouseDown={(event) => event.stopPropagation()}>
             <For each={menuActions()}>{(action, index) =>
               <ActionButton id={action.id} label={action.label} compact variant={action.variant}
-                disabled={action.disabled} active={menuIndex() === index()} onPress={() => pressMenu(index())} />
+                trailingLabel={action.trailingLabel}
+                disabled={action.disabled} active={menuIndex() === index()} onPress={() => pressMenu(index())}
+                onHover={() => {
+                  setMenuIndex(index())
+                  const now = menu()
+                  if (!now) return
+                  if (now.pane === "trees" && index() === 0) openRenameSubmenu()
+                  else if (now.renameOpen) setMenu({ ...now, renameOpen: false })
+                }} />
             }</For>
           </box>
+          <Show when={current().renameOpen}>
+            <box id="rename-submenu" position="absolute"
+              left={(() => {
+                const mainLeft = Math.max(0, Math.min(current().x, dimensions().width - 28))
+                return mainLeft + 43 <= dimensions().width ? mainLeft + 27 : Math.max(0, mainLeft - 15)
+              })()}
+              top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
+              width={Math.min(16, dimensions().width)} height={4} zIndex={31}
+              border borderColor={theme.accent} backgroundColor={theme.panel}
+              onMouseDown={(event) => event.stopPropagation()}>
+              <For each={submenuActions()}>{(action, index) =>
+                <ActionButton id={action.id} label={action.label} compact disabled={action.disabled}
+                  active={submenuIndex() === index()} onPress={() => pressSubmenu(index())}
+                  onHover={() => setSubmenuIndex(index())} />
+              }</For>
+            </box>
+          </Show>
         </>}
       </Show>
 
-      <Show when={modal()?.kind === "rename-choice"}>
-        <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}
-          onMouseDown={(event) => { event.stopPropagation(); cancelModal() }} />
-      </Show>
       <Show when={modal()} fallback={<box width={0} height={0} />}>
         {(current: () => Modal) => (
           <box
@@ -1057,7 +1097,7 @@ export function App() {
             left={8}
             right={8}
             top={6}
-            height={current().kind === "logs" ? "70%" : current().kind === "rename-choice" ? 8 : 12}
+            height={current().kind === "logs" ? "70%" : 12}
             zIndex={20}
             border
             borderColor={theme.accent}
@@ -1077,11 +1117,6 @@ export function App() {
                 </scrollbox>
                 <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
               </>
-            ) : current().kind === "rename-choice" ? (
-              <box flexDirection="row" gap={1}>
-                <ActionButton id="btn-manual-rename" label="manual" active={modalFocus() === "manual"} onPress={openManualRename} />
-                <ActionButton id="btn-auto-rename" label="auto" active={modalFocus() === "auto"} disabled={!selectedTree()?.branch} onPress={() => void autoRename()} />
-              </box>
             ) : (
               <>
                 {"value" in current() ? (

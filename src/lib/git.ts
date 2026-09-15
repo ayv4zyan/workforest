@@ -146,6 +146,7 @@ export function renameWorktree(opts: {
     gitOk(tree.path, ["branch", "-m", newName])
   }
   if (tree.path !== dest) {
+    mkdirSync(dirname(dest), { recursive: true })
     gitOk(repoPath, ["worktree", "move", tree.path, dest])
   }
   return { path: dest, branch: newName }

@@ -8,11 +8,13 @@ type Variant = "default" | "accent" | "danger" | "ghost"
 export function ActionButton(props: {
   id?: string
   label: string
+  trailingLabel?: string
   onPress: () => void
   variant?: Variant
   disabled?: boolean
   active?: boolean
   compact?: boolean
+  onHover?: () => void
 }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
@@ -57,6 +59,8 @@ export function ActionButton(props: {
       height={props.compact ? 1 : 3}
       paddingLeft={1}
       paddingRight={1}
+      flexDirection="row"
+      justifyContent={props.trailingLabel ? "space-between" : "flex-start"}
       flexShrink={0}
       borderColor={border()}
       backgroundColor={bg()}
@@ -64,6 +68,7 @@ export function ActionButton(props: {
       onMouseOver={() => {
         if (props.disabled) return
         setHover(true)
+        props.onHover?.()
         renderer.setMousePointer("pointer")
         renderer.requestRender()
       }}
@@ -76,6 +81,11 @@ export function ActionButton(props: {
       <text fg={fg()} selectable={false} onMouseDown={press}>
         {props.label}
       </text>
+      {props.trailingLabel ? (
+        <text fg={fg()} selectable={false} onMouseDown={press}>
+          {props.trailingLabel}
+        </text>
+      ) : null}
     </box>
   )
 }

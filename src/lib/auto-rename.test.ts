@@ -68,11 +68,11 @@ test("empty worktrees and main are rejected; untracked-only work can be named", 
   expect(renameContext(repo, tree)).toContain("new-feature.ts")
 })
 
-test("rejects prose, paths, malformed JSON, and excessively long names", () => {
-  for (const value of ["use this name", "{}", "null", '{"name":"../oops"}', '{"name":"feat/auth"}', JSON.stringify({ name: "a".repeat(65) })]) {
+test("requires the agent prefix and rejects malformed or excessively long names", () => {
+  for (const value of ["use this name", "{}", "null", '{"name":"../oops"}', '{"name":"feat/auth"}', '{"name":"fix-login-redirect"}', JSON.stringify({ name: `agent/${"a".repeat(59)}` })]) {
     expect(() => parseSuggestedName(value)).toThrow()
   }
-  expect(parseSuggestedName('{"name":"fix-login-redirect"}')).toBe("fix-login-redirect")
+  expect(parseSuggestedName('{"name":"agent/fix-login-redirect"}')).toBe("agent/fix-login-redirect")
 })
 
 test("Codex receives the diff and Luna High options, without renaming the tree", async () => {
@@ -83,14 +83,15 @@ test("Codex receives the diff and Luna High options, without renaming the tree",
 const args = process.argv.slice(2)
 const prompt = await Bun.stdin.text()
 await Bun.write(${JSON.stringify(capture)}, JSON.stringify({ args, prompt, cwd: process.cwd() }))
-await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({ name: 'fix-login-redirect' }))
+await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({ name: 'agent/fix-login-redirect' }))
 `)
-  expect(await suggestWorktreeName(repo, tree)).toBe("fix-login-redirect")
+  expect(await suggestWorktreeName(repo, tree)).toBe("agent/fix-login-redirect")
   const request = JSON.parse(readFileSync(capture, "utf8"))
   expect(request.args).toContain("gpt-5.6-luna")
   expect(request.args).toContain('model_reasoning_effort="high"')
   expect(request.args).toContain("read-only")
   expect(request.prompt).toContain("fix login redirect")
+  expect(request.prompt).toContain("must start with agent/")
   expect(request.cwd).not.toBe(tree.path)
   expect(listWorktrees(repo)[1]?.branch).toBe("old-name")
 })

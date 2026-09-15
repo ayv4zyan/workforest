@@ -310,7 +310,7 @@ test("auto-rename mouse action suggests a name and submit renames branch and dir
   writeFileSync(executable, `#!${process.execPath}
 const args = process.argv.slice(2)
 await Bun.sleep(100)
-await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({name: 'fix-login-flow'}))
+await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({name: 'agent/fix-login-flow'}))
 `)
   chmodSync(executable, 0o755)
   process.env.PATH = `${root}:${oldPath}`
@@ -330,7 +330,9 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await setup.mockInput.typeText("m")
     await paint(setup)
     await click("btn-rename")
-    expect(setup.captureCharFrame()).toContain("Choose how to name")
+    expect(findById(setup.renderer.root, "rename-submenu")).toBeTruthy()
+    expect(setup.captureCharFrame()).toContain("Manual")
+    expect(setup.captureCharFrame()).toContain("Auto")
     await click("btn-manual-rename")
     expect(findById(setup.renderer.root, "modal-input")).toBeTruthy()
     expect(setup.captureCharFrame()).toContain("old-feature")
@@ -341,12 +343,12 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await click("btn-auto-rename")
     expect(setup.captureCharFrame()).toContain("cancel rename")
     for (let i = 0; i < 60 && !findById(setup.renderer.root, "modal-input"); i++) await paint(setup)
-    expect(setup.captureCharFrame()).toContain("fix-login-flow")
+    expect(setup.captureCharFrame()).toContain("agent/fix-login-flow")
     expect(listWorktrees(repo)[1]?.branch).toBe("old-feature")
     await click("btn-submit")
     const renamed = listWorktrees(repo)[1]!
-    expect(renamed.branch).toBe("fix-login-flow")
-    expect(renamed.path.endsWith("/fix-login-flow")).toBe(true)
+    expect(renamed.branch).toBe("agent/fix-login-flow")
+    expect(renamed.path.endsWith("/agent/fix-login-flow")).toBe(true)
   } finally {
     setup.renderer.destroy()
     process.env.PATH = oldPath
