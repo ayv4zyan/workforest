@@ -143,28 +143,33 @@ test("arrow keys cycle focused panes", async () => {
   }
 })
 
-test("down focuses pane controls and up returns to panes", async () => {
+test("vertical arrows navigate lists and only leave from the first item", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const repos = [join(process.env.WORKFOREST_HOME, "alpha"), join(process.env.WORKFOREST_HOME, "beta")]
+  for (const repo of repos) {
+    mkdirSync(repo)
+    gitOk(repo, ["init", "-b", "main"])
+    gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+    addProject(process.env.WORKFOREST_HOME, repo)
+  }
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
     await setup.renderOnce()
 
     setup.mockInput.pressArrow("down")
     await paint(setup)
-    setup.mockInput.pressEnter()
-    await paint(setup)
-    expect(setup.captureCharFrame()).toContain("add project")
-
-    setup.mockInput.pressEscape()
-    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("▶ beta")
 
     setup.mockInput.pressArrow("up")
     await paint(setup)
-    setup.mockInput.pressArrow("right")
+    expect(setup.captureCharFrame()).toContain("▶ alpha")
+
+    // Up from the first row reaches the header; down returns to the list.
+    setup.mockInput.pressArrow("up")
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressArrow("down")
     await paint(setup)
-    const frame = setup.captureCharFrame()
-    expect(findById(setup.renderer.root, "btn-new")).toBeTruthy()
-    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
+    expect(setup.captureCharFrame()).toContain("▶ beta")
   } finally {
     setup.renderer.destroy()
   }
@@ -193,18 +198,19 @@ test("pane add buttons remain visible when focus changes", async () => {
 })
 
 async function openAddProjectModal(setup: {
-  mockInput: { pressArrow: (direction: "up" | "down" | "left" | "right") => void; pressEnter: () => void }
+  renderer: { root: Renderable }
+  mockMouse: { click: (x: number, y: number) => Promise<void> }
   renderOnce: () => Promise<void>
   captureCharFrame: () => string
 }) {
-  setup.mockInput.pressArrow("down")
-  await paint(setup)
-  setup.mockInput.pressEnter()
+  const button = findById(setup.renderer.root, "btn-add")
+  if (!button) throw new Error("missing add button")
+  await setup.mockMouse.click(button.x + 1, button.y)
   await paint(setup)
   expect(setup.captureCharFrame()).toContain("add project")
 }
 
-test("up from panes focuses header, down returns through panes to pane controls", async () => {
+test("up from an empty pane focuses the header and down returns to the pane", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -214,11 +220,9 @@ test("up from panes focuses header, down returns through panes to pane controls"
     await paint(setup)
     setup.mockInput.pressArrow("down")
     await paint(setup)
-    setup.mockInput.pressArrow("down")
-    await paint(setup)
     setup.mockInput.pressEnter()
     await paint(setup)
-    expect(setup.captureCharFrame()).toContain("add project")
+    expect(setup.captureCharFrame()).not.toContain("add project")
   } finally {
     setup.renderer.destroy()
   }
@@ -485,6 +489,11 @@ test("row menus target the clicked item, protect main, and support mouse and key
   const project = loadConfig(home).projects[1]!
   const tree = createWorktree({ repoPath: repos[1]!, home, projectId: project.id, name: "feature-menu" })
   const setup = await testRender(() => <App />, { width: 90, height: 18 })
+  let copiedPath = ""
+  setup.renderer.copyToClipboardOSC52 = (value: string) => {
+    copiedPath = value
+    return true
+  }
   const click = async (id: string) => {
     const node = findById(setup.renderer.root, id)!
     expect(node).toBeTruthy()
@@ -527,6 +536,11 @@ test("row menus target the clicked item, protect main, and support mouse and key
     expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
     expect(loadRunRecords(home)).toEqual([])
 
+    await rightClick("feature-menu")
+    await click("btn-copy-path")
+    expect(copiedPath).toBe(tree.path)
+    expect(setup.captureCharFrame()).toContain("copied")
+
     await rightClick("(main)")
     await click("btn-delete")
     expect(findById(setup.renderer.root, "context-menu")).toBeTruthy()
@@ -542,6 +556,7 @@ test("row menus target the clicked item, protect main, and support mouse and key
     const menu = findById(setup.renderer.root, "context-menu")!
     expect(menu.x + menu.width).toBeLessThanOrEqual(90)
     expect(menu.y + menu.height).toBeLessThanOrEqual(18)
+    setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressEnter()
     await paint(setup)

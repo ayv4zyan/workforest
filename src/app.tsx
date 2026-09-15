@@ -94,16 +94,20 @@ export function App() {
   const projectOptions = (): SelectOption[] =>
     projects().map((project) => ({
       name: project.name,
-      description: displayPath(project.path),
+      description: "",
       value: project.id,
     }))
 
   const treeOptions = (): SelectOption[] =>
-    trees().map((tree) => ({
-      name: `${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}  ${serverStatus(serversForWorktree(servers(), tree.path))}`,
-      description: `${tree.branch ?? "detached"}  ${displayPath(tree.path)}`,
-      value: tree.path,
-    }))
+    trees().map((tree) => {
+      const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")
+      const status = statusParts.join(" ")
+      return {
+        name: `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`,
+        description: `${tree.branch ?? "detached"}  ${displayPath(tree.path)}`,
+        value: tree.path,
+      }
+    })
 
   function refresh() {
     const config = loadConfig(dataDir())
@@ -216,6 +220,20 @@ export function App() {
     focusPane(panes[next]!)
   }
 
+  function movePaneSelection(delta: number) {
+    if (pane() === "projects") {
+      const next = Math.max(0, Math.min(projectIndex() + delta, projects().length - 1))
+      const project = projects()[next]
+      if (!project || project.id === selectedProjectId()) return
+      setSelectedProjectId(project.id)
+      loadTreesFor(project.id)
+      return
+    }
+    const next = Math.max(0, Math.min(treeIndex() + delta, trees().length - 1))
+    const tree = trees()[next]
+    if (tree) pickTree(tree.path)
+  }
+
   function headerActions(): Action[] {
     const serverActions: Action[] = selectedTree() ? [
       {
@@ -259,15 +277,16 @@ export function App() {
     const linked = Boolean(tree && !tree.isMain) && !busy()
     return [
       { id: "btn-rename", label: "Rename", trailingLabel: "›", disabled: !linked, onPress: openRenameSubmenu },
+      { id: "btn-copy-path", label: "Copy path", disabled: !tree, onPress: copyWorktreePath },
       { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
     ]
   }
 
-  function selectedRowTop(index: number, count: number, height: number) {
+  function selectedRowTop(index: number, count: number, height: number, linesPerItem: number) {
     // Match the centered scrolling used by Select and pickSelectIndex.
-    const visible = Math.max(1, Math.floor(height / 2))
+    const visible = Math.max(1, Math.floor(height / linesPerItem))
     const offset = Math.max(0, Math.min(index - Math.floor(visible / 2), count - visible))
-    return (index - offset) * 2
+    return (index - offset) * linesPerItem
   }
 
   function openMenu(target: Pane, x?: number, y?: number) {
@@ -276,8 +295,8 @@ export function App() {
     focusPane(target)
     const list = target === "projects" ? projectList : treeList
     const row = target === "projects"
-      ? selectedRowTop(projectIndex(), projects().length, projectListHeight())
-      : selectedRowTop(treeIndex(), trees().length, treeListHeight())
+      ? selectedRowTop(projectIndex(), projects().length, projectListHeight(), 1)
+      : selectedRowTop(treeIndex(), trees().length, treeListHeight(), 2)
     setMenuIndex(0)
     setSubmenuIndex(0)
     setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
@@ -303,6 +322,7 @@ export function App() {
   }
 
   const contextMenuWidth = () => actionMenuWidth(menuActions())
+  const contextMenuHeight = () => menuActions().length + 2
   const renameSubmenuWidth = () => actionMenuWidth(submenuActions(), 20)
 
   function pressSubmenu(index = submenuIndex()) {
@@ -310,6 +330,13 @@ export function App() {
     if (!action || action.disabled) return
     setMenu(null)
     action.onPress()
+  }
+
+  function copyWorktreePath() {
+    const tree = selectedTree()
+    if (!tree) return
+    const copied = renderer.copyToClipboardOSC52(tree.path)
+    setStatus(copied ? `copied ${displayPath(tree.path)}` : "terminal clipboard is unavailable")
   }
 
   function pressMenu(index = menuIndex()) {
@@ -491,13 +518,14 @@ export function App() {
     selectedIndex: number,
     count: number,
     onPick: (index: number, activate: boolean) => void,
+    linesPerItem = 2,
   ) {
     event.stopPropagation()
     event.preventDefault()
     if (modal() || menu() || (event.button !== 0 && event.button !== 2)) return
     const target = event.currentTarget
     if (!target) return
-    const index = pickSelectIndex(event.y - target.y, target.height, selectedIndex, count, 2)
+    const index = pickSelectIndex(event.y - target.y, target.height, selectedIndex, count, linesPerItem)
     if (index == null) return
     onPick(index, event.button === 0 && index === selectedIndex)
   }
@@ -594,17 +622,21 @@ export function App() {
     if (key.name === "down") {
       key.preventDefault()
       if (focusRow() === "header") setFocusRow("panes")
-      else if (focusRow() === "panes") {
-        setFocusRow("pane-actions")
-      }
+      else if (focusRow() === "pane-actions") setFocusRow("panes")
+      else movePaneSelection(1)
       return
     }
     if (key.name === "up") {
       key.preventDefault()
       if (focusRow() === "pane-actions") setFocusRow("panes")
       else if (focusRow() === "panes") {
-        setFocusRow("header")
-        setHeaderIndex(0)
+        const index = pane() === "projects" ? projectIndex() : treeIndex()
+        if (index === 0) {
+          setFocusRow("header")
+          setHeaderIndex(0)
+        } else {
+          movePaneSelection(-1)
+        }
       }
       return
     }
@@ -915,6 +947,13 @@ export function App() {
                 onPress={() => { focusPane("projects"); openAddProject() }} />
               <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
             </box>
+            <Show when={selectedProject()}>
+              {(project: () => Project) => (
+                <box id="selected-project-path" height={2} paddingLeft={1} paddingRight={1}>
+                  <text fg={theme.muted} wrapMode="char" selectable={false}>{displayPath(project().path)}</text>
+                </box>
+              )}
+            </Show>
             <Show
               when={projects().length > 0}
               fallback={
@@ -938,7 +977,7 @@ export function App() {
                   focused={pane() === "projects" && focusRow() === "panes" && !modal() && !menu()}
                   options={projectOptions()}
                   selectedIndex={projectIndex()}
-                  showDescription
+                  showDescription={false}
                   backgroundColor={theme.panel}
                   focusedBackgroundColor={theme.panel}
                   selectedBackgroundColor={theme.selectedBg}
@@ -954,7 +993,7 @@ export function App() {
                       loadTreesFor(project.id)
                       if (event.button === 2) openMenu("projects", event.x, event.y)
                       if (activate) focusPane("trees")
-                    })
+                    }, 1)
                   }}
                   onMouseScroll={(event) => {
                     focusPane("projects")
@@ -1060,8 +1099,8 @@ export function App() {
             onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
           <box id="context-menu" position="absolute"
             left={Math.max(0, Math.min(current().x, dimensions().width - contextMenuWidth()))}
-            top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
-            width={contextMenuWidth()} height={4} zIndex={30}
+            top={Math.max(0, Math.min(current().y, dimensions().height - contextMenuHeight()))}
+            width={contextMenuWidth()} height={contextMenuHeight()} zIndex={30}
             border borderColor={theme.accent} backgroundColor={theme.panel}
             onMouseDown={(event) => event.stopPropagation()}>
             <For each={menuActions()}>{(action, index) =>
@@ -1085,7 +1124,7 @@ export function App() {
                   ? mainLeft + contextMenuWidth() - 1
                   : Math.max(0, mainLeft - renameSubmenuWidth() + 1)
               })()}
-              top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
+              top={Math.max(0, Math.min(current().y, dimensions().height - contextMenuHeight()))}
               width={renameSubmenuWidth()} height={4} zIndex={31}
               border borderColor={theme.accent} backgroundColor={theme.panel}
               onMouseDown={(event) => event.stopPropagation()}>
