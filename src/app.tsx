@@ -947,13 +947,6 @@ export function App() {
                 onPress={() => { focusPane("projects"); openAddProject() }} />
               <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
             </box>
-            <Show when={selectedProject()}>
-              {(project: () => Project) => (
-                <box id="selected-project-path" height={2} paddingLeft={1} paddingRight={1}>
-                  <text fg={theme.muted} wrapMode="char" selectable={false}>{displayPath(project().path)}</text>
-                </box>
-              )}
-            </Show>
             <Show
               when={projects().length > 0}
               fallback={
