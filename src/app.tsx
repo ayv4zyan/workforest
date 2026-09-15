@@ -69,7 +69,6 @@ export function App() {
   const [pane, setPane] = createSignal<Pane>("projects")
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
   const [headerIndex, setHeaderIndex] = createSignal(0)
-  const [paneActionIndex, setPaneActionIndex] = createSignal(0)
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
   const [projects, setProjects] = createSignal<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
@@ -213,7 +212,6 @@ export function App() {
     const index = panes.indexOf(pane())
     const next = (index + delta + panes.length) % panes.length
     focusPane(panes[next]!)
-    setPaneActionIndex(0)
   }
 
   function headerActions(): Action[] {
@@ -290,14 +288,13 @@ export function App() {
   }
 
   function pressPaneAction() {
-    if (paneActionIndex() === 1) openMenu(pane())
-    else if (pane() === "projects") openAddProject()
+    if (pane() === "projects") openAddProject()
     else openNewTree()
   }
 
   function cycleRow(delta: number) {
     if (focusRow() === "header") cycleHeader(delta)
-    else if (focusRow() === "pane-actions") setPaneActionIndex((paneActionIndex() + delta + 2) % 2)
+    else if (focusRow() === "pane-actions") return
     else cyclePane(delta)
   }
 
@@ -568,7 +565,6 @@ export function App() {
       if (focusRow() === "header") setFocusRow("panes")
       else if (focusRow() === "panes") {
         setFocusRow("pane-actions")
-        setPaneActionIndex(0)
       }
       return
     }
@@ -887,7 +883,7 @@ export function App() {
           >
             <box height={1} flexDirection="row" gap={1}>
               <ActionButton id="btn-add" label="+" compact disabled={busy()}
-                active={pane() === "projects" && focusRow() === "pane-actions" && paneActionIndex() === 0}
+                active={pane() === "projects" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("projects"); openAddProject() }} />
               <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
             </box>
@@ -955,13 +951,6 @@ export function App() {
                     }
                   }}
                 />
-                <box width={3} flexShrink={0}>
-                  <box position="absolute" top={selectedRowTop(projectIndex(), projects().length, projectListHeight())} width={3} height={1}>
-                    <ActionButton id="projects-more" label="⋯" compact
-                      active={pane() === "projects" && focusRow() === "pane-actions" && paneActionIndex() === 1}
-                      onPress={() => openMenu("projects")} />
-                  </box>
-                </box>
               </box>
             </Show>
           </box>
@@ -979,7 +968,7 @@ export function App() {
           >
             <box height={1} flexDirection="row" gap={1}>
               <ActionButton id="btn-new" label="+" compact disabled={!selectedProject() || busy()}
-                active={pane() === "trees" && focusRow() === "pane-actions" && paneActionIndex() === 0}
+                active={pane() === "trees" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("trees"); openNewTree() }} />
               <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${trees().length})`}</text>
             </box>
@@ -1026,13 +1015,6 @@ export function App() {
                   }}
                   onSelect={() => toggleServer()}
                 />
-                <box width={3} flexShrink={0}>
-                  <box position="absolute" top={selectedRowTop(treeIndex(), trees().length, treeListHeight())} width={3} height={1}>
-                    <ActionButton id="trees-more" label="⋯" compact
-                      active={pane() === "trees" && focusRow() === "pane-actions" && paneActionIndex() === 1}
-                      onPress={() => openMenu("trees")} />
-                  </box>
-                </box>
               </box>
             </Show>
           </box>

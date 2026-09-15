@@ -327,8 +327,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await setup.mockMouse.click(row.x, row.y)
     await paint(setup)
     expect(findById(setup.renderer.root, "btn-auto-rename")).toBeUndefined()
-    const more = findById(setup.renderer.root, "trees-more")!
-    await setup.mockMouse.click(more.x + 1, more.y)
+    await setup.mockInput.typeText("m")
     await paint(setup)
     await click("btn-rename")
     expect(setup.captureCharFrame()).toContain("Choose how to name")
@@ -336,7 +335,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     expect(findById(setup.renderer.root, "modal-input")).toBeTruthy()
     expect(setup.captureCharFrame()).toContain("old-feature")
     await click("btn-cancel")
-    await setup.mockMouse.click(more.x + 1, more.y)
+    await setup.mockInput.typeText("m")
     await paint(setup)
     await click("btn-rename")
     await click("btn-auto-rename")
@@ -506,12 +505,9 @@ test("row menus target the clicked item, protect main, and support mouse and key
     expect(loadConfig(home).projects[1]?.startCommand).toBe("bun dev")
     expect(loadConfig(home).projects[0]?.startCommand).toBeUndefined()
 
-    const featureRow = findText(setup.captureCharFrame(), "feature-menu")
     await rightClick("feature-menu")
     expect(findById(setup.renderer.root, "context-menu")).toBeTruthy()
     expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
-    const more = findById(setup.renderer.root, "trees-more")!
-    expect(more.y).toBe(featureRow.y)
     setup.mockInput.pressEscape()
     await paint(setup)
     // Right-clicking the already selected worktree must not start its server.
@@ -533,11 +529,7 @@ test("row menus target the clicked item, protect main, and support mouse and key
     setup.mockInput.pressEscape()
     await paint(setup)
 
-    const feature = findText(setup.captureCharFrame(), "feature-menu")
-    await setup.mockMouse.click(feature.x, feature.y)
-    await paint(setup)
-    await setup.mockInput.typeText("m")
-    await paint(setup)
+    await rightClick("feature-menu")
     const menu = findById(setup.renderer.root, "context-menu")!
     expect(menu.x + menu.width).toBeLessThanOrEqual(90)
     expect(menu.y + menu.height).toBeLessThanOrEqual(18)
@@ -552,7 +544,7 @@ test("row menus target the clicked item, protect main, and support mouse and key
     await click("btn-submit")
     expect(listWorktrees(repos[1]!)).toHaveLength(1)
 
-    await click("projects-more")
+    await rightClick("beta")
     await click("btn-unregister")
     expect(setup.captureCharFrame()).toContain("Remove beta from the list?")
     await click("btn-submit")
@@ -584,13 +576,9 @@ test("selected row menu follows scrolling and stays inside a resized terminal", 
       await setup.mockMouse.scroll(35, 6, "down")
       await paint(setup)
     }
-    let more = findById(setup.renderer.root, "trees-more")!
-    expect(more.y).toBe(findText(setup.captureCharFrame(), "item-7").y)
     setup.renderer.resize(80, 14)
     await paint(setup)
-    more = findById(setup.renderer.root, "trees-more")!
-    expect(more.y).toBe(findText(setup.captureCharFrame(), "item-7").y)
-    await setup.mockMouse.click(more.x + 1, more.y)
+    await setup.mockInput.typeText("m")
     await paint(setup)
     const menu = findById(setup.renderer.root, "context-menu")!
     expect(menu.x + menu.width).toBeLessThanOrEqual(80)
