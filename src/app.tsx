@@ -1,4 +1,4 @@
-import { Show, createSignal, onCleanup, onMount, type Accessor } from "solid-js"
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import type { MouseEvent, SelectOption } from "@opentui/core"
 import { theme } from "./theme.ts"
@@ -26,8 +26,17 @@ import {
 } from "./lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
-type View = "trees" | "servers"
 type Pane = "projects" | "trees" | "servers"
+type FocusRow = "panes" | "footer"
+type FooterAction = {
+  id: string
+  label: string
+  variant?: "accent" | "danger"
+  disabled?: boolean
+  onPress: () => void
+}
+
+const panes: Pane[] = ["projects", "trees", "servers"]
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
   | { kind: "add-project"; value: string; error?: string }
@@ -41,25 +50,26 @@ const dataDir = () => workforestHome()
 
 export function App() {
   const renderer = useRenderer()
-  const [view, setView] = createSignal<View>("trees")
   const [pane, setPane] = createSignal<Pane>("projects")
+  const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
+  const [footerIndex, setFooterIndex] = createSignal(0)
   const [projects, setProjects] = createSignal<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [trees, setTrees] = createSignal<TreeRow[]>([])
   const [selectedTreePath, setSelectedTreePath] = createSignal<string | null>(null)
   const [servers, setServers] = createSignal<ServerRow[]>([])
   const [selectedServerPid, setSelectedServerPid] = createSignal<number | null>(null)
-  const [status, setStatus] = createSignal("register a project with a")
+  const [status, setStatus] = createSignal("")
   const [busy, setBusy] = createSignal(false)
   const [modal, setModal] = createSignal<Modal | null>(null)
 
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
   const selectedTree = () => trees().find((tree) => tree.path === selectedTreePath()) ?? null
-  const selectedServer = () => servers().find((row) => row.pid === selectedServerPid()) ?? null
   const treeServers = () => {
     const tree = selectedTree()
     return tree ? serversForWorktree(servers(), tree.path) : []
   }
+  const selectedServer = () => treeServers().find((row) => row.pid === selectedServerPid()) ?? null
 
   const projectOptions = (): SelectOption[] =>
     projects().map((project) => ({
@@ -76,24 +86,20 @@ export function App() {
     }))
 
   const serverOptions = (): SelectOption[] =>
-    servers().map((row) => ({
-      name: `:${row.port}  ${projectName(row.projectId)}  ${displayForPath(row.worktreePath)}`,
-      description: `${row.owned ? "owned" : "discovered"}  pid ${row.pid}  ${row.command}`,
+    treeServers().map((row) => ({
+      name: `:${row.port}  ${row.owned ? "owned" : "discovered"}`,
+      description: `pid ${row.pid}  ${row.command}`,
       value: String(row.pid),
     }))
 
-  function projectName(id: string): string {
-    return projects().find((project) => project.id === id)?.name ?? id
+  function syncSelectedServer(treePath: string | null, rows: ServerRow[] = servers()) {
+    const visible = treePath ? serversForWorktree(rows, treePath) : []
+    if (!visible.some((row) => row.pid === selectedServerPid())) {
+      setSelectedServerPid(visible[0]?.pid ?? null)
+    }
   }
 
-  function displayForPath(path: string): string {
-    const tree = trees().find((row) => row.path === path)
-    if (tree) return tree.displayName
-    const parts = path.split("/").filter(Boolean)
-    return parts[parts.length - 1] ?? path
-  }
-
-  function refresh(quiet = false) {
+  function refresh() {
     const config = loadConfig(dataDir())
     setProjects(config.projects)
     const currentId =
@@ -112,6 +118,7 @@ export function App() {
     }
 
     const project = config.projects.find((row) => row.id === currentId)
+    let currentPath: string | null = null
     if (project) {
       const listed = (treesByProject.get(project.id) ?? []).map((tree) => ({
         ...tree,
@@ -119,7 +126,7 @@ export function App() {
         displayName: worktreeDisplayName(tree),
       }))
       setTrees(listed)
-      const currentPath = listed.some((tree) => tree.path === selectedTreePath())
+      currentPath = listed.some((tree) => tree.path === selectedTreePath())
         ? selectedTreePath()
         : (listed[0]?.path ?? null)
       setSelectedTreePath(currentPath)
@@ -130,10 +137,7 @@ export function App() {
 
     const rows = collectServers({ home: dataDir(), projects: config.projects, treesByProject })
     setServers(rows)
-    if (!rows.some((row) => row.pid === selectedServerPid())) {
-      setSelectedServerPid(rows[0]?.pid ?? null)
-    }
-    if (!quiet) setStatus(`${config.projects.length} project(s)`)
+    syncSelectedServer(currentPath, rows)
   }
 
   function loadTreesFor(projectId: string) {
@@ -141,6 +145,7 @@ export function App() {
     if (!project) {
       setTrees([])
       setSelectedTreePath(null)
+      syncSelectedServer(null)
       return
     }
     const listed = listWorktrees(project.path).map((tree) => ({
@@ -149,9 +154,16 @@ export function App() {
       displayName: worktreeDisplayName(tree),
     }))
     setTrees(listed)
-    if (!listed.some((tree) => tree.path === selectedTreePath())) {
-      setSelectedTreePath(listed[0]?.path ?? null)
-    }
+    const path = listed.some((tree) => tree.path === selectedTreePath())
+      ? selectedTreePath()
+      : (listed[0]?.path ?? null)
+    setSelectedTreePath(path)
+    syncSelectedServer(path)
+  }
+
+  function pickTree(path: string) {
+    setSelectedTreePath(path)
+    syncSelectedServer(path)
   }
 
   function runOp(label: string, fn: () => string | void) {
@@ -160,7 +172,7 @@ export function App() {
     setStatus(label)
     try {
       const message = fn()
-      refresh(true)
+      refresh()
       setStatus(message ?? "ok")
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
@@ -178,7 +190,7 @@ export function App() {
     const timer = setInterval(() => {
       if (busy() || modal()) return
       try {
-        refresh(true)
+        refresh()
       } catch {
         // keep last status
       }
@@ -186,18 +198,66 @@ export function App() {
     onCleanup(() => clearInterval(timer))
   })
 
-  function goTrees() {
-    setView("trees")
-    setPane("projects")
-  }
-
-  function goServers() {
-    setView("servers")
-    setPane("servers")
-  }
-
   function quit() {
     renderer.destroy()
+  }
+
+  function focusPane(next: Pane) {
+    setPane(next)
+    setFocusRow("panes")
+  }
+
+  function cyclePane(delta: number) {
+    const index = panes.indexOf(pane())
+    const next = (index + delta + panes.length) % panes.length
+    focusPane(panes[next]!)
+    setFooterIndex(0)
+  }
+
+  function footerActions(): FooterAction[] {
+    const refreshAction: FooterAction = { id: "btn-refresh", label: "refresh", onPress: () => refresh() }
+    if (pane() === "projects") {
+      return [
+        { id: "btn-add", label: "add", onPress: openAddProject },
+        { id: "btn-unregister", label: "unregister", disabled: !selectedProject(), onPress: openUnregister },
+        refreshAction,
+      ]
+    }
+    if (pane() === "trees") {
+      const tree = selectedTree()
+      const linked = Boolean(tree && !tree.isMain)
+      return [
+        { id: "btn-new", label: "new", disabled: !selectedProject(), onPress: openNewTree },
+        { id: "btn-rename", label: "rename", disabled: !linked, onPress: openRename },
+        { id: "btn-delete", label: "delete", variant: "danger", disabled: !linked, onPress: openDelete },
+        {
+          id: "btn-start",
+          label: treeServers().length > 0 ? "stop" : "start",
+          variant: "accent",
+          disabled: !tree,
+          onPress: toggleServer,
+        },
+        refreshAction,
+      ]
+    }
+    return [
+      { id: "btn-kill", label: "kill", variant: "danger", disabled: !selectedServer(), onPress: openKill },
+      refreshAction,
+    ]
+  }
+
+  function cycleFooter(delta: number) {
+    const actions = footerActions()
+    if (actions.length === 0) return
+    const current = Math.min(footerIndex(), actions.length - 1)
+    setFooterIndex((current + delta + actions.length) % actions.length)
+  }
+
+  function pressFooter() {
+    const actions = footerActions()
+    const action = actions[Math.min(footerIndex(), Math.max(0, actions.length - 1))]
+    if (!action || action.disabled) return
+    action.onPress()
   }
 
   function openAddProject() {
@@ -245,13 +305,11 @@ export function App() {
 
   function openKill() {
     if (busy()) return
-    const fromTree = view() === "trees" ? treeServers()[0] : undefined
-    const row = fromTree ?? selectedServer()
+    const row = selectedServer()
     if (!row) {
       setStatus("no server selected")
       return
     }
-    setSelectedServerPid(row.pid)
     setModal({ kind: "kill" })
   }
 
@@ -316,20 +374,39 @@ export function App() {
       refresh()
       return
     }
-    if (key.name === "1") {
-      goTrees()
-      return
-    }
-    if (key.name === "2") {
-      goServers()
-      return
-    }
     if (key.name === "tab") {
-      if (view() === "servers") {
-        setPane("servers")
-        return
+      if (focusRow() === "footer") cycleFooter(key.shift ? -1 : 1)
+      else cyclePane(key.shift ? -1 : 1)
+      return
+    }
+    if (key.name === "left") {
+      if (focusRow() === "footer") cycleFooter(-1)
+      else cyclePane(-1)
+      return
+    }
+    if (key.name === "right") {
+      if (focusRow() === "footer") cycleFooter(1)
+      else cyclePane(1)
+      return
+    }
+    if (key.name === "down") {
+      key.preventDefault()
+      if (focusRow() !== "footer") {
+        setFocusRow("footer")
+        setFooterIndex(0)
       }
-      setPane(pane() === "projects" ? "trees" : "projects")
+      return
+    }
+    if (key.name === "up") {
+      if (focusRow() === "footer") {
+        key.preventDefault()
+        setFocusRow("panes")
+      }
+      return
+    }
+    if ((key.name === "return" || key.name === "enter") && focusRow() === "footer") {
+      key.preventDefault()
+      pressFooter()
       return
     }
     if (busy()) return
@@ -369,7 +446,7 @@ export function App() {
         const project = addProject(dataDir(), value)
         setSelectedProjectId(project.id)
         setModal(null)
-        refresh(true)
+        refresh()
         setStatus(`added ${project.name}`)
         return
       }
@@ -386,7 +463,7 @@ export function App() {
         const notes = setupWorktreeDeps(project.path, tree.path)
         setSelectedTreePath(tree.path)
         setModal(null)
-        refresh(true)
+        refresh()
         setStatus(`created ${value}${notes.length ? ` — ${notes.join("; ")}` : ""}`)
         return
       }
@@ -406,7 +483,7 @@ export function App() {
         movePort(dataDir(), tree.path, renamed.path)
         setSelectedTreePath(renamed.path)
         setModal(null)
-        refresh(true)
+        refresh()
         setStatus(`renamed to ${value}`)
         return
       }
@@ -481,7 +558,7 @@ export function App() {
 
   const projectIndex = () => Math.max(0, projects().findIndex((project) => project.id === selectedProjectId()))
   const treeIndex = () => Math.max(0, trees().findIndex((tree) => tree.path === selectedTreePath()))
-  const serverIndex = () => Math.max(0, servers().findIndex((row) => row.pid === selectedServerPid()))
+  const serverIndex = () => Math.max(0, treeServers().findIndex((row) => row.pid === selectedServerPid()))
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
@@ -538,36 +615,23 @@ export function App() {
     return "error" in current ? current.error : undefined
   }
 
-  const canRename = () => {
-    const tree = selectedTree()
-    return Boolean(tree && !tree.isMain)
-  }
-  const canDelete = () => canRename()
-  const canKill = () => Boolean(view() === "trees" ? treeServers()[0] : selectedServer())
-  const startLabel = () => (treeServers().length > 0 ? "stop" : "start")
-
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
       <box height={3} zIndex={2} paddingLeft={1} paddingRight={1} flexDirection="row" alignItems="center" justifyContent="space-between" backgroundColor={theme.header}>
         <text fg={theme.accent} selectable={false}>Workforest</text>
-        <box flexDirection="row" gap={1}>
-          <ActionButton id="tab-worktrees" label="worktrees" variant={view() === "trees" ? "accent" : "default"} onPress={goTrees} />
-          <ActionButton id="tab-servers" label="servers" variant={view() === "servers" ? "accent" : "default"} onPress={goServers} />
-        </box>
         <ActionButton id="btn-quit" label="quit" onPress={quit} />
       </box>
 
-      {view() === "trees" ? (
-        <box flexGrow={1} flexDirection="row">
+      <box flexGrow={1} flexDirection="row">
           <box
             width={28}
             border
             borderColor={pane() === "projects" ? theme.borderFocus : theme.border}
-            title="projects"
+            title={`projects (${projects().length})`}
             titleColor={pane() === "projects" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
-              if (!modal()) setPane("projects")
+              if (!modal()) focusPane("projects")
             }}
           >
             <Show
@@ -584,7 +648,7 @@ export function App() {
               }
             >
               <select
-                focused={pane() === "projects" && !modal()}
+                focused={pane() === "projects" && focusRow() === "panes" && !modal()}
                 options={projectOptions()}
                 selectedIndex={projectIndex()}
                 showDescription
@@ -595,17 +659,17 @@ export function App() {
                 textColor={theme.text}
                 descriptionColor={theme.muted}
                 onMouseDown={(event) => {
-                  setPane("projects")
+                  focusPane("projects")
                   clickSelect(event, projectIndex(), projects().length, (index, activate) => {
                     const project = projects()[index]
                     if (!project) return
                     setSelectedProjectId(project.id)
                     loadTreesFor(project.id)
-                    if (activate) setPane("trees")
+                    if (activate) focusPane("trees")
                   })
                 }}
                 onMouseScroll={(event) => {
-                  setPane("projects")
+                  focusPane("projects")
                   wheelSelect(event, projectIndex(), projects().length, (index) => {
                     const project = projects()[index]
                     if (!project) return
@@ -623,7 +687,7 @@ export function App() {
                   if (option?.value) {
                     setSelectedProjectId(String(option.value))
                     loadTreesFor(String(option.value))
-                    setPane("trees")
+                    focusPane("trees")
                   }
                 }}
               />
@@ -631,14 +695,15 @@ export function App() {
           </box>
 
           <box
+            id="pane-trees"
             flexGrow={1}
             border
             borderColor={pane() === "trees" ? theme.borderFocus : theme.border}
-            title="worktrees"
+            title={`worktrees (${trees().length})`}
             titleColor={pane() === "trees" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
-              if (!modal()) setPane("trees")
+              if (!modal()) focusPane("trees")
             }}
           >
             <Show
@@ -646,7 +711,7 @@ export function App() {
               fallback={<text fg={theme.muted} selectable={false}>no worktrees</text>}
             >
               <select
-                focused={pane() === "trees" && !modal()}
+                focused={pane() === "trees" && focusRow() === "panes" && !modal()}
                 options={treeOptions()}
                 selectedIndex={treeIndex()}
                 showDescription
@@ -657,114 +722,122 @@ export function App() {
                 textColor={theme.text}
                 descriptionColor={theme.muted}
                 onMouseDown={(event) => {
-                  setPane("trees")
+                  focusPane("trees")
                   clickSelect(event, treeIndex(), trees().length, (index, activate) => {
                     const tree = trees()[index]
                     if (!tree) return
-                    setSelectedTreePath(tree.path)
+                    pickTree(tree.path)
                     if (activate) toggleServer()
                   })
                 }}
                 onMouseScroll={(event) => {
-                  setPane("trees")
+                  focusPane("trees")
                   wheelSelect(event, treeIndex(), trees().length, (index) => {
                     const tree = trees()[index]
-                    if (tree) setSelectedTreePath(tree.path)
+                    if (tree) pickTree(tree.path)
                   })
                 }}
                 onChange={(_index, option) => {
-                  if (option?.value) setSelectedTreePath(String(option.value))
+                  if (option?.value) pickTree(String(option.value))
                 }}
                 onSelect={() => toggleServer()}
               />
             </Show>
           </box>
 
-          <box width={36} border borderColor={theme.border} title="detail" titleColor={theme.muted} backgroundColor={theme.panel} padding={1} flexDirection="column" gap={1}>
-            <Show when={selectedTree()} fallback={<text fg={theme.muted} selectable={false}>pick a worktree</text>}>
-              {(tree: Accessor<TreeRow>) => (
-                <box flexDirection="column" gap={1}>
-                  <text fg={theme.text} selectable={false}>{tree().displayName}</text>
-                  <text fg={theme.muted} selectable={false}>{`branch  ${tree().branch ?? "detached"}`}</text>
-                  <text fg={theme.muted} selectable={false}>{`path    ${tree().path}`}</text>
-                  <text fg={tree().dirty ? theme.warn : theme.accent} selectable={false}>{tree().dirty ? "dirty" : "clean"}</text>
-                  <text fg={theme.muted} selectable={false}>
-                    {`servers  ${
-                      treeServers().length === 0
-                        ? "none"
-                        : treeServers()
-                            .map((row) => `:${row.port}`)
-                            .join(" ")
-                    }`}
-                  </text>
-                  <box flexDirection="row" gap={1}>
-                    <ActionButton label={startLabel()} variant="accent" onPress={toggleServer} />
-                    <ActionButton label="rename" disabled={!canRename()} onPress={openRename} />
-                    <ActionButton label="delete" variant="danger" disabled={!canDelete()} onPress={openDelete} />
-                  </box>
-                </box>
-              )}
+          <box
+            id="pane-servers"
+            width={36}
+            border
+            borderColor={pane() === "servers" ? theme.borderFocus : theme.border}
+            title={`servers (${treeServers().length})`}
+            titleColor={pane() === "servers" ? theme.accent : theme.muted}
+            backgroundColor={theme.panel}
+            onMouseDown={() => {
+              if (!modal()) focusPane("servers")
+            }}
+          >
+            <Show
+              when={treeServers().length > 0}
+              fallback={
+                <text fg={theme.muted} selectable={false}>
+                  {selectedTree() ? "no listeners on this worktree" : "pick a worktree"}
+                </text>
+              }
+            >
+              <select
+                focused={pane() === "servers" && focusRow() === "panes" && !modal()}
+                options={serverOptions()}
+                selectedIndex={serverIndex()}
+                showDescription
+                backgroundColor={theme.panel}
+                focusedBackgroundColor={theme.panel}
+                selectedBackgroundColor={theme.selectedBg}
+                selectedTextColor={theme.selectedFg}
+                textColor={theme.text}
+                descriptionColor={theme.muted}
+                onMouseDown={(event) => {
+                  focusPane("servers")
+                  clickSelect(event, serverIndex(), treeServers().length, (index, activate) => {
+                    const row = treeServers()[index]
+                    if (!row) return
+                    setSelectedServerPid(row.pid)
+                    if (activate) openKill()
+                  })
+                }}
+                onMouseScroll={(event) => {
+                  focusPane("servers")
+                  wheelSelect(event, serverIndex(), treeServers().length, (index) => {
+                    const row = treeServers()[index]
+                    if (row) setSelectedServerPid(row.pid)
+                  })
+                }}
+                onChange={(_index, option) => {
+                  if (option?.value) setSelectedServerPid(Number(option.value))
+                }}
+                onSelect={() => openKill()}
+              />
             </Show>
           </box>
-        </box>
-      ) : (
+      </box>
+
+      <box height={status() ? 6 : 5} zIndex={2} flexDirection="column">
+        <Show when={status()}>
+          <box paddingLeft={1} paddingRight={1}>
+            <text fg={status().match(/fail|error|not |invalid|already|no /i) ? theme.danger : theme.muted} selectable={false}>{status()}</text>
+          </box>
+        </Show>
         <box
-          flexGrow={1}
+          id="footer-actions"
           border
-          borderColor={theme.borderFocus}
-          title="servers"
-          titleColor={theme.accent}
+          borderColor={focusRow() === "footer" ? theme.borderFocus : theme.border}
+          title="actions"
+          titleColor={focusRow() === "footer" ? theme.accent : theme.muted}
           backgroundColor={theme.panel}
+          flexDirection="row"
+          gap={1}
+          height={5}
+          alignItems="center"
           onMouseDown={() => {
-            if (!modal()) setPane("servers")
+            if (!modal()) setFocusRow("footer")
           }}
         >
-          <Show when={servers().length > 0} fallback={<text fg={theme.muted} selectable={false}>no listeners in registered worktrees</text>}>
-            <select
-              focused={!modal()}
-              options={serverOptions()}
-              selectedIndex={serverIndex()}
-              showDescription
-              backgroundColor={theme.panel}
-              focusedBackgroundColor={theme.panel}
-              selectedBackgroundColor={theme.selectedBg}
-              selectedTextColor={theme.selectedFg}
-              textColor={theme.text}
-              descriptionColor={theme.muted}
-              onMouseDown={(event) => {
-                clickSelect(event, serverIndex(), servers().length, (index, activate) => {
-                  const row = servers()[index]
-                  if (!row) return
-                  setSelectedServerPid(row.pid)
-                  if (activate) openKill()
-                })
-              }}
-              onMouseScroll={(event) => {
-                wheelSelect(event, serverIndex(), servers().length, (index) => {
-                  const row = servers()[index]
-                  if (row) setSelectedServerPid(row.pid)
-                })
-              }}
-              onChange={(_index, option) => {
-                if (option?.value) setSelectedServerPid(Number(option.value))
-              }}
-              onSelect={() => openKill()}
-            />
-          </Show>
-        </box>
-      )}
-
-      <box height={5} zIndex={2} paddingLeft={1} paddingRight={1} backgroundColor={theme.header} flexDirection="column">
-        <text fg={status().match(/fail|error|not |invalid|already|no /i) ? theme.danger : theme.muted} selectable={false}>{status()}</text>
-        <box flexDirection="row" gap={1} height={3}>
-          <ActionButton id="btn-add" label="add" onPress={openAddProject} />
-          <ActionButton label="new" disabled={!selectedProject()} onPress={openNewTree} />
-          <ActionButton label="rename" disabled={!canRename()} onPress={openRename} />
-          <ActionButton label="delete" variant="danger" disabled={!canDelete()} onPress={openDelete} />
-          <ActionButton label="unregister" disabled={!selectedProject()} onPress={openUnregister} />
-          <ActionButton label={startLabel()} variant="accent" disabled={!selectedTree()} onPress={toggleServer} />
-          <ActionButton label="kill" variant="danger" disabled={!canKill()} onPress={openKill} />
-          <ActionButton label="refresh" onPress={() => refresh()} />
+          <For each={footerActions()}>
+            {(action, index) => (
+              <ActionButton
+                id={action.id}
+                label={action.label}
+                variant={action.variant}
+                disabled={action.disabled}
+                active={focusRow() === "footer" && footerIndex() === index()}
+                onPress={() => {
+                  setFocusRow("footer")
+                  setFooterIndex(index())
+                  action.onPress()
+                }}
+              />
+            )}
+          </For>
         </box>
       </box>
 

@@ -8,6 +8,6 @@ TUI at `src/app.tsx`. Domain logic in `src/lib`. Data dir `~/.workforest` (overr
 - `node_modules` is symlinked from main when lockfiles match; otherwise `bun install`. `.env*` is copied.
 - Servers: owned (spawned from the TUI, pid files in `run/`) and discovered (`lsof` listeners whose cwd is a worktree).
 
-The TUI is fully mouse-driven: header tabs, list rows (click to select, click again to activate, wheel to move), footer and detail buttons, modal submit/cancel. Keyboard shortcuts still work.
+The TUI is fully mouse-driven: list rows (click to select, click again to activate, wheel to move), footer buttons for the focused pane, modal submit/cancel. Keyboard shortcuts still work. Panes are projects, worktrees, and servers for the selected worktree.
 
 Run `bun test` after changing `src/lib`.

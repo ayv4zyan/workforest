@@ -11,14 +11,18 @@ export function ActionButton(props: {
   onPress: () => void
   variant?: Variant
   disabled?: boolean
+  active?: boolean
 }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const variant = () => props.variant ?? "default"
 
   const border = () => {
+    if (hover() || props.active) {
+      if (props.disabled) return theme.borderFocus
+      return variant() === "danger" ? theme.danger : theme.accent
+    }
     if (props.disabled) return theme.border
-    if (hover()) return variant() === "danger" ? theme.danger : theme.accent
     if (variant() === "accent") return theme.accent
     if (variant() === "danger") return theme.danger
     return theme.border
@@ -27,14 +31,14 @@ export function ActionButton(props: {
   const fg = () => {
     if (props.disabled) return theme.muted
     if (variant() === "danger") return theme.danger
-    if (variant() === "accent" || hover()) return theme.selectedFg
+    if (variant() === "accent" || hover() || props.active) return theme.selectedFg
     return theme.text
   }
 
   const bg = () => {
     if (props.disabled) return theme.panel
-    if (hover() && variant() === "danger") return "#3d1114"
-    if (hover()) return theme.selectedBg
+    if ((hover() || props.active) && variant() === "danger") return "#3d1114"
+    if (hover() || props.active) return theme.selectedBg
     return theme.panel
   }
 

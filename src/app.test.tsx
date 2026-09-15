@@ -26,6 +26,8 @@ function findById(node: Renderable, id: string): Renderable | undefined {
   return undefined
 }
 
+
+
 test("test renderer can paint text", async () => {
   const setup = await testRender(() => (
     <box>
@@ -88,11 +90,102 @@ test("renders the workforest shell with clickable controls", async () => {
     await setup.renderOnce()
     const frame = setup.captureCharFrame()
     expect(frame).toContain("Workforest")
-    expect(frame).toContain("worktrees")
-    expect(frame).toContain("servers")
+    expect(frame).toContain("projects (0)")
+    expect(frame).toContain("worktrees (0)")
+    expect(frame).toContain("servers (0)")
     expect(frame).toContain("add")
+    expect(frame).toContain("actions")
     expect(frame).toContain("refresh")
     expect(frame).toContain("quit")
+    expect(frame).not.toContain("detail")
+    expect(frame).not.toContain("kill")
+    expect(frame).not.toContain("project(s)")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("arrow keys cycle focused panes", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("add")
+    expect(setup.captureCharFrame()).not.toContain("kill")
+
+    setup.mockInput.pressArrow("right")
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    let frame = setup.captureCharFrame()
+    expect(frame).toContain("new")
+    expect(frame).not.toContain("add")
+    expect(frame).not.toContain("kill")
+
+    setup.mockInput.pressArrow("right")
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("kill")
+    expect(frame).not.toContain("add")
+
+    setup.mockInput.pressArrow("left")
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+    expect(frame).toContain("new")
+    expect(frame).not.toContain("kill")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("down focuses footer buttons and up returns to panes", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+
+    setup.mockInput.pressArrow("down")
+    await Bun.sleep(20)
+    setup.mockInput.pressEnter()
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    expect(setup.captureCharFrame()).toContain("add project")
+
+    setup.mockInput.pressEscape()
+    await Bun.sleep(20)
+    await setup.renderOnce()
+
+    setup.mockInput.pressArrow("up")
+    await Bun.sleep(20)
+    setup.mockInput.pressArrow("right")
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("new")
+    expect(frame).not.toContain("add")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
+test("footer actions follow the focused pane", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    const servers = findById(setup.renderer.root, "pane-servers")
+    if (!servers) throw new Error("missing pane-servers")
+    await setup.mockMouse.click(servers.x + 1, servers.y)
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    const frame = setup.captureCharFrame()
+    expect(frame).toContain("projects")
+    expect(frame).toContain("worktrees")
+    expect(frame).toContain("servers")
+    expect(frame).toContain("kill")
+    expect(frame).toContain("refresh")
+    expect(frame).not.toContain("add")
   } finally {
     setup.renderer.destroy()
   }
