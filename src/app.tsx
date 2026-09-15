@@ -1,6 +1,7 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import type { MouseEvent, SelectOption } from "@opentui/core"
+import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
 import { nextIndex, pickSelectIndex } from "./lib/select-hit.ts"
 import { ActionButton } from "./ui/button.tsx"
@@ -28,7 +29,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
 type Pane = "projects" | "trees" | "servers"
 type FocusRow = "header" | "panes" | "footer"
-type ModalFocus = "input" | "submit" | "cancel"
+type ModalFocus = "input" | "submit" | "cancel" | "manual" | "auto"
 type FooterAction = {
   id: string
   label: string
@@ -40,9 +41,10 @@ type FooterAction = {
 const panes: Pane[] = ["projects", "trees", "servers"]
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
+  | { kind: "rename-choice" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
-  | { kind: "rename"; value: string; error?: string }
+  | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
   | { kind: "kill" }
@@ -64,6 +66,8 @@ export function App() {
   const [selectedServerPid, setSelectedServerPid] = createSignal<number | null>(null)
   const [status, setStatus] = createSignal("")
   const [busy, setBusy] = createSignal(false)
+  let renameRequest: AbortController | undefined
+  onCleanup(() => renameRequest?.abort())
   const [modal, setModal] = createSignal<Modal | null>(null)
 
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
@@ -202,6 +206,7 @@ export function App() {
   })
 
   function quit() {
+    renameRequest?.abort()
     renderer.destroy()
   }
 
@@ -220,6 +225,7 @@ export function App() {
   function headerActions(): FooterAction[] {
     return [
       { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
+      ...(busy() && renameRequest ? [{ id: "btn-cancel-generation", label: "cancel rename", onPress: () => renameRequest?.abort() }] : []),
       { id: "btn-quit", label: "quit", onPress: quit },
     ]
   }
@@ -286,12 +292,13 @@ export function App() {
 
   function showModal(next: Modal) {
     setModal(next)
-    setModalFocus("value" in next ? "input" : "submit")
+    setModalFocus(next.kind === "rename-choice" ? "manual" : "value" in next ? "input" : "submit")
   }
 
   function modalFocusables(): ModalFocus[] {
     const current = modal()
     if (!current) return []
+    if (current.kind === "rename-choice") return selectedTree()?.branch ? ["manual", "auto"] : ["manual"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
 
@@ -306,6 +313,11 @@ export function App() {
   function handleModalArrow(name: string, preventDefault: () => void) {
     const current = modal()
     if (!current) return
+    if (current.kind === "rename-choice") {
+      preventDefault()
+      cycleModalFocus(name === "left" || name === "up" ? -1 : 1)
+      return
+    }
     const hasInput = "value" in current
     const focus = modalFocus()
 
@@ -353,12 +365,51 @@ export function App() {
 
   function openRename() {
     if (busy()) return
+    if (modal()?.kind === "rename-choice") {
+      cancelModal()
+      return
+    }
     const tree = selectedTree()
     if (!tree || tree.isMain) {
       setStatus("pick a linked worktree to rename")
       return
     }
-    showModal({ kind: "rename", value: tree.displayName })
+    showModal({ kind: "rename-choice" })
+  }
+
+  function openManualRename() {
+    const tree = selectedTree()
+    const project = selectedProject()
+    if (!tree || tree.isMain || !project) return
+    showModal({ kind: "rename", value: tree.displayName, target: { project, tree } })
+  }
+
+  async function autoRename() {
+    if (busy() || (modal() && modal()?.kind !== "rename-choice")) return
+    const project = selectedProject()
+    const tree = selectedTree()
+    if (!project || !tree || tree.isMain || !tree.branch) {
+      setStatus("pick a linked worktree with a branch to auto-rename")
+      return
+    }
+    setModal(null)
+    const request = new AbortController()
+    renameRequest = request
+    setBusy(true)
+    setStatus(`asking Luna High for a name for ${tree.displayName}… (esc to cancel)`)
+    try {
+      const name = await suggestWorktreeName(project.path, tree, request.signal)
+      setSelectedProjectId(project.id)
+      loadTreesFor(project.id)
+      pickTree(tree.path)
+      showModal({ kind: "rename", value: name, target: { project, tree } })
+      setStatus(`Luna suggested ${name} — edit or submit to rename`)
+    } catch (error) {
+      setStatus(request.signal.aborted ? "auto-rename cancelled" : error instanceof Error ? error.message : String(error))
+    } finally {
+      renameRequest = undefined
+      setBusy(false)
+    }
   }
 
   function openDelete() {
@@ -388,6 +439,11 @@ export function App() {
   function acceptModal() {
     const current = modal()
     if (!current) return
+    if (current.kind === "rename-choice") {
+      if (modalFocus() === "auto") void autoRename()
+      else openManualRename()
+      return
+    }
     if ("value" in current) {
       submitModal(current.value)
       return
@@ -423,6 +479,10 @@ export function App() {
       quit()
       return
     }
+    if (key.name === "escape" && renameRequest) {
+      renameRequest.abort()
+      return
+    }
     if (modal()) {
       if (key.name === "escape") {
         cancelModal()
@@ -441,7 +501,7 @@ export function App() {
         if (modalFocus() === "cancel") {
           key.preventDefault()
           cancelModal()
-        } else if (modalFocus() === "submit") {
+        } else if (["submit", "manual", "auto"].includes(modalFocus())) {
           key.preventDefault()
           acceptModal()
         }
@@ -510,7 +570,8 @@ export function App() {
       return
     }
     if (key.name === "r") {
-      openRename()
+      if (key.shift) void autoRename()
+      else openRename()
       return
     }
     if (key.name === "d") {
@@ -555,8 +616,9 @@ export function App() {
         return
       }
       if (current.kind === "rename") {
-        const project = selectedProject()
-        const tree = selectedTree()
+        const project = current.target?.project ?? selectedProject()
+        const target = current.target?.tree
+        const tree = target && project ? listWorktrees(project.path).find((row) => row.path === target.path && row.branch === target.branch) : selectedTree()
         if (!project || !tree) throw new Error("nothing to rename")
         if (!value) throw new Error("name required")
         const renamed = renameWorktree({
@@ -653,6 +715,7 @@ export function App() {
         return "add project"
       case "new-tree":
         return "new worktree"
+      case "rename-choice":
       case "rename":
         return "rename worktree"
       case "delete":
@@ -670,6 +733,8 @@ export function App() {
         return "Path to the main checkout"
       case "new-tree":
         return "Name is used for the directory and the branch"
+      case "rename-choice":
+        return "Choose how to name this worktree"
       case "rename":
         return "Renames the directory and the branch"
       case "delete": {
@@ -756,6 +821,7 @@ export function App() {
               }
             >
               <select
+                flexGrow={1}
                 focused={pane() === "projects" && focusRow() === "panes" && !modal()}
                 options={projectOptions()}
                 selectedIndex={projectIndex()}
@@ -819,6 +885,7 @@ export function App() {
               fallback={<text fg={theme.muted} selectable={false}>no worktrees</text>}
             >
               <select
+                flexGrow={1}
                 focused={pane() === "trees" && focusRow() === "panes" && !modal()}
                 options={treeOptions()}
                 selectedIndex={treeIndex()}
@@ -874,6 +941,7 @@ export function App() {
               }
             >
               <select
+                flexGrow={1}
                 focused={pane() === "servers" && focusRow() === "panes" && !modal()}
                 options={serverOptions()}
                 selectedIndex={serverIndex()}
@@ -949,14 +1017,18 @@ export function App() {
         </box>
       </box>
 
+      <Show when={modal()?.kind === "rename-choice"}>
+        <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}
+          onMouseDown={(event) => { event.stopPropagation(); cancelModal() }} />
+      </Show>
       <Show when={modal()} fallback={<box width={0} height={0} />}>
-        {(current) => (
+        {(current: () => Modal) => (
           <box
             position="absolute"
             left={8}
             right={8}
             top={6}
-            height={12}
+            height={current().kind === "rename-choice" ? 8 : 12}
             zIndex={20}
             border
             borderColor={theme.accent}
@@ -969,52 +1041,61 @@ export function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <text fg={theme.text} selectable={false}>{modalBody(current())}</text>
-            {"value" in current() ? (
-              <input
-                id="modal-input"
-                focused={modalFocus() === "input"}
-                value={modalValue(current())}
-                placeholder={modalPlaceholder(current())}
-                width="100%"
-                backgroundColor={theme.panel}
-                focusedBackgroundColor="#21262d"
-                textColor={theme.text}
-                cursorColor={theme.accent}
-                onMouseDown={() => setModalFocus("input")}
-                onInput={(value) => {
-                  const now = modal()
-                  if (now && "value" in now) setModal({ ...now, value, error: undefined })
-                }}
-                onSubmit={() => {
-                  const now = modal()
-                  if (now && "value" in now) submitModal(now.value)
-                }}
-              />
+            {current().kind === "rename-choice" ? (
+              <box flexDirection="row" gap={1}>
+                <ActionButton id="btn-manual-rename" label="manual" active={modalFocus() === "manual"} onPress={openManualRename} />
+                <ActionButton id="btn-auto-rename" label="auto" active={modalFocus() === "auto"} disabled={!selectedTree()?.branch} onPress={() => void autoRename()} />
+              </box>
             ) : (
-              <text fg={theme.muted} selectable={false}>confirm or cancel</text>
+              <>
+                {"value" in current() ? (
+                  <input
+                    id="modal-input"
+                    focused={modalFocus() === "input"}
+                    value={modalValue(current())}
+                    placeholder={modalPlaceholder(current())}
+                    width="100%"
+                    backgroundColor={theme.panel}
+                    focusedBackgroundColor="#21262d"
+                    textColor={theme.text}
+                    cursorColor={theme.accent}
+                    onMouseDown={() => setModalFocus("input")}
+                    onInput={(value) => {
+                      const now = modal()
+                      if (now && "value" in now) setModal({ ...now, value, error: undefined })
+                    }}
+                    onSubmit={() => {
+                      const now = modal()
+                      if (now && "value" in now) submitModal(now.value)
+                    }}
+                  />
+                ) : (
+                  <text fg={theme.muted} selectable={false}>confirm or cancel</text>
+                )}
+                <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
+                <box flexDirection="row" gap={1}>
+                  <ActionButton
+                    id="btn-submit"
+                    label={"value" in current() ? "submit" : "confirm"}
+                    variant="accent"
+                    active={modalFocus() === "submit"}
+                    onPress={() => {
+                      setModalFocus("submit")
+                      acceptModal()
+                    }}
+                  />
+                  <ActionButton
+                    id="btn-cancel"
+                    label="cancel"
+                    active={modalFocus() === "cancel"}
+                    onPress={() => {
+                      setModalFocus("cancel")
+                      cancelModal()
+                    }}
+                  />
+                </box>
+              </>
             )}
-            <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
-            <box flexDirection="row" gap={1}>
-              <ActionButton
-                id="btn-submit"
-                label={"value" in current() ? "submit" : "confirm"}
-                variant="accent"
-                active={modalFocus() === "submit"}
-                onPress={() => {
-                  setModalFocus("submit")
-                  acceptModal()
-                }}
-              />
-              <ActionButton
-                id="btn-cancel"
-                label="cancel"
-                active={modalFocus() === "cancel"}
-                onPress={() => {
-                  setModalFocus("cancel")
-                  cancelModal()
-                }}
-              />
-            </box>
           </box>
         )}
       </Show>

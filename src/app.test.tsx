@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { mkdtempSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
 import type { Renderable } from "@opentui/core"
+import { addProject } from "./lib/config.ts"
+import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
 import { App } from "./app.tsx"
 import { ActionButton } from "./ui/button.tsx"
 
@@ -285,3 +287,63 @@ test("modal left and right stay in the path field", async () => {
   }
 })
 
+
+
+test("auto-rename mouse action suggests a name and submit renames branch and directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-auto-ui-"))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = join(root, "home")
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(process.env.WORKFOREST_HOME, repo)
+  const tree = createWorktree({ repoPath: repo, home: process.env.WORKFOREST_HOME, projectId: project.id, name: "old-feature" })
+  writeFileSync(join(tree.path, "login.ts"), "login")
+  const executable = join(root, "codex")
+  writeFileSync(executable, `#!${process.execPath}
+const args = process.argv.slice(2)
+await Bun.sleep(100)
+await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({name: 'fix-login-flow'}))
+`)
+  chmodSync(executable, 0o755)
+  process.env.PATH = `${root}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 160, height: 36 })
+  const click = async (id: string) => {
+    const button = findById(setup.renderer.root, id)
+    expect(button).toBeTruthy()
+    await setup.mockMouse.click(button!.x + 2, button!.y + 1)
+    await paint(setup)
+  }
+  try {
+    await paint(setup)
+    const row = findText(setup.captureCharFrame(), "old-feature")
+    await setup.mockMouse.click(row.x, row.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "btn-auto-rename")).toBeUndefined()
+    await click("btn-rename")
+    expect(setup.captureCharFrame()).toContain("Choose how to name")
+    await click("btn-manual-rename")
+    expect(findById(setup.renderer.root, "modal-input")).toBeTruthy()
+    expect(setup.captureCharFrame()).toContain("old-feature")
+    await click("btn-cancel")
+    await click("btn-rename")
+    await click("btn-auto-rename")
+    expect(setup.captureCharFrame()).toContain("cancel rename")
+    for (let i = 0; i < 60 && !findById(setup.renderer.root, "modal-input"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("fix-login-flow")
+    expect(listWorktrees(repo)[1]?.branch).toBe("old-feature")
+    await click("btn-submit")
+    const renamed = listWorktrees(repo)[1]!
+    expect(renamed.branch).toBe("fix-login-flow")
+    expect(renamed.path.endsWith("/fix-login-flow")).toBe(true)
+  } finally {
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
