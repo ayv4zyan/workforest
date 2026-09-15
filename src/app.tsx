@@ -1,6 +1,6 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
-import { useKeyboard, useRenderer } from "@opentui/solid"
-import type { MouseEvent, SelectOption } from "@opentui/core"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import type { MouseEvent, SelectOption, SelectRenderable } from "@opentui/core"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
 import { nextIndex, pickSelectIndex } from "./lib/select-hit.ts"
@@ -30,7 +30,8 @@ import {
 import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
 type Pane = "projects" | "trees"
-type FocusRow = "header" | "panes" | "footer"
+type FocusRow = "header" | "panes" | "pane-actions"
+type RowMenu = { pane: Pane; x: number; y: number }
 type ModalFocus = "input" | "submit" | "cancel" | "manual" | "auto"
 type Action = {
   id: string
@@ -58,10 +59,17 @@ const dataDir = () => workforestHome()
 
 export function App() {
   const renderer = useRenderer()
+  const dimensions = useTerminalDimensions()
+  const [menu, setMenu] = createSignal<RowMenu | null>(null)
+  const [menuIndex, setMenuIndex] = createSignal(0)
+  const [projectListHeight, setProjectListHeight] = createSignal(0)
+  const [treeListHeight, setTreeListHeight] = createSignal(0)
+  let projectList: SelectRenderable | undefined
+  let treeList: SelectRenderable | undefined
   const [pane, setPane] = createSignal<Pane>("projects")
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
   const [headerIndex, setHeaderIndex] = createSignal(0)
-  const [footerIndex, setFooterIndex] = createSignal(0)
+  const [paneActionIndex, setPaneActionIndex] = createSignal(0)
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
   const [projects, setProjects] = createSignal<Project[]>([])
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
@@ -181,7 +189,7 @@ export function App() {
       setStatus(error instanceof Error ? error.message : String(error))
     }
     const timer = setInterval(() => {
-      if (busy() || modal()) return
+      if (busy() || modal() || menu()) return
       try {
         refresh()
       } catch {
@@ -205,7 +213,7 @@ export function App() {
     const index = panes.indexOf(pane())
     const next = (index + delta + panes.length) % panes.length
     focusPane(panes[next]!)
-    setFooterIndex(0)
+    setPaneActionIndex(0)
   }
 
   function headerActions(): Action[] {
@@ -240,47 +248,61 @@ export function App() {
     action.onPress()
   }
 
-  function footerActions(): Action[] {
-    if (pane() === "projects") {
+  function menuActions(): Action[] {
+    if (menu()?.pane === "projects") {
       return [
-        { id: "btn-add", label: "add", onPress: openAddProject },
-        { id: "btn-command", label: "command", disabled: !selectedProject() || busy(), onPress: openStartCommand },
-        { id: "btn-unregister", label: "unregister", disabled: !selectedProject(), onPress: openUnregister },
+        { id: "btn-command", label: "Edit start command", disabled: busy(), onPress: openStartCommand },
+        { id: "btn-unregister", label: "Remove from list", variant: "danger", disabled: busy(), onPress: openUnregister },
       ]
     }
-    if (pane() === "trees") {
-      const tree = selectedTree()
-      const linked = Boolean(tree && !tree.isMain)
-      return [
-        { id: "btn-new", label: "new", disabled: !selectedProject(), onPress: openNewTree },
-        { id: "btn-rename", label: "rename", disabled: !linked, onPress: openRename },
-        { id: "btn-delete", label: "delete", variant: "danger", disabled: !linked, onPress: openDelete },
-      ]
-    }
-    return []
+    const tree = selectedTree()
+    const linked = Boolean(tree && !tree.isMain) && !busy()
+    return [
+      { id: "btn-rename", label: "Rename", disabled: !linked, onPress: openRename },
+      { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
+    ]
   }
 
-  function cycleFooter(delta: number) {
-    const actions = footerActions()
-    if (actions.length === 0) return
-    const current = Math.min(footerIndex(), actions.length - 1)
-    setFooterIndex((current + delta + actions.length) % actions.length)
+  function selectedRowTop(index: number, count: number, height: number) {
+    // Match the centered scrolling used by Select and pickSelectIndex.
+    const visible = Math.max(1, Math.floor(height / 2))
+    const offset = Math.max(0, Math.min(index - Math.floor(visible / 2), count - visible))
+    return (index - offset) * 2
   }
 
-  function pressFooter() {
-    const actions = footerActions()
-    const action = actions[Math.min(footerIndex(), Math.max(0, actions.length - 1))]
+  function openMenu(target: Pane, x?: number, y?: number) {
+    if (modal() || busy()) return
+    if (target === "projects" ? !selectedProject() : !selectedTree()) return
+    focusPane(target)
+    const list = target === "projects" ? projectList : treeList
+    const row = target === "projects"
+      ? selectedRowTop(projectIndex(), projects().length, projectListHeight())
+      : selectedRowTop(treeIndex(), trees().length, treeListHeight())
+    setMenuIndex(0)
+    setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row })
+  }
+
+  function pressMenu(index = menuIndex()) {
+    const action = menuActions()[index]
     if (!action || action.disabled) return
+    setMenu(null)
     action.onPress()
+  }
+
+  function pressPaneAction() {
+    if (paneActionIndex() === 1) openMenu(pane())
+    else if (pane() === "projects") openAddProject()
+    else openNewTree()
   }
 
   function cycleRow(delta: number) {
     if (focusRow() === "header") cycleHeader(delta)
-    else if (focusRow() === "footer") cycleFooter(delta)
+    else if (focusRow() === "pane-actions") setPaneActionIndex((paneActionIndex() + delta + 2) % 2)
     else cyclePane(delta)
   }
 
   function showModal(next: Modal) {
+    setMenu(null)
     setModal(next)
     setModalFocus(next.kind === "rename-choice" ? "manual" : "value" in next ? "input" : "submit")
   }
@@ -454,15 +476,17 @@ export function App() {
   ) {
     event.stopPropagation()
     event.preventDefault()
+    if (modal() || menu() || (event.button !== 0 && event.button !== 2)) return
     const target = event.currentTarget
     if (!target) return
     const index = pickSelectIndex(event.y - target.y, target.height, selectedIndex, count, 2)
     if (index == null) return
-    onPick(index, index === selectedIndex)
+    onPick(index, event.button === 0 && index === selectedIndex)
   }
 
   function wheelSelect(event: MouseEvent, selectedIndex: number, count: number, onPick: (index: number) => void) {
     event.stopPropagation()
+    if (modal() || menu()) return
     const direction = event.scroll?.direction
     const delta = direction === "down" || direction === "right" ? 1 : direction === "up" || direction === "left" ? -1 : 0
     if (!delta) return
@@ -472,6 +496,15 @@ export function App() {
   useKeyboard((key) => {
     if (key.name === "q" && key.ctrl) {
       quit()
+      return
+    }
+    if (menu()) {
+      key.preventDefault()
+      if (key.name === "escape") setMenu(null)
+      else if (["up", "down", "tab"].includes(key.name)) {
+        const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
+        setMenuIndex((menuIndex() + delta + menuActions().length) % menuActions().length)
+      } else if (["return", "enter"].includes(key.name)) pressMenu()
       return
     }
     if (key.name === "escape" && renameRequest) {
@@ -534,14 +567,14 @@ export function App() {
       key.preventDefault()
       if (focusRow() === "header") setFocusRow("panes")
       else if (focusRow() === "panes") {
-        setFocusRow("footer")
-        setFooterIndex(0)
+        setFocusRow("pane-actions")
+        setPaneActionIndex(0)
       }
       return
     }
     if (key.name === "up") {
       key.preventDefault()
-      if (focusRow() === "footer") setFocusRow("panes")
+      if (focusRow() === "pane-actions") setFocusRow("panes")
       else if (focusRow() === "panes") {
         setFocusRow("header")
         setHeaderIndex(0)
@@ -549,13 +582,18 @@ export function App() {
       return
     }
     if (key.name === "return" || key.name === "enter") {
-      if (focusRow() === "footer") {
+      if (focusRow() === "pane-actions") {
         key.preventDefault()
-        pressFooter()
+        pressPaneAction()
       } else if (focusRow() === "header") {
         key.preventDefault()
         pressHeader()
       }
+      return
+    }
+    if (key.name === "m" || (key.name === "f10" && key.shift)) {
+      key.preventDefault()
+      openMenu(pane())
       return
     }
     if (busy()) return
@@ -748,7 +786,7 @@ export function App() {
       case "delete":
         return "delete worktree"
       case "unregister":
-        return "unregister project"
+        return "remove project from list"
       case "stop":
         return "stop servers"
       case "start-command":
@@ -837,16 +875,22 @@ export function App() {
 
       <box flexGrow={1} flexDirection="row">
           <box
+            id="pane-projects"
             width={28}
             border
             borderColor={pane() === "projects" && focusRow() === "panes" ? theme.borderFocus : theme.border}
-            title={`projects (${projects().length})`}
             titleColor={pane() === "projects" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
               if (!modal()) focusPane("projects")
             }}
           >
+            <box height={1} flexDirection="row" gap={1}>
+              <ActionButton id="btn-add" label="+" compact disabled={busy()}
+                active={pane() === "projects" && focusRow() === "pane-actions" && paneActionIndex() === 0}
+                onPress={() => { focusPane("projects"); openAddProject() }} />
+              <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
+            </box>
             <Show
               when={projects().length > 0}
               fallback={
@@ -860,51 +904,65 @@ export function App() {
                 </box>
               }
             >
-              <select
-                flexGrow={1}
-                focused={pane() === "projects" && focusRow() === "panes" && !modal()}
-                options={projectOptions()}
-                selectedIndex={projectIndex()}
-                showDescription
-                backgroundColor={theme.panel}
-                focusedBackgroundColor={theme.panel}
-                selectedBackgroundColor={theme.selectedBg}
-                selectedTextColor={theme.selectedFg}
-                textColor={theme.text}
-                descriptionColor={theme.muted}
-                onMouseDown={(event) => {
-                  focusPane("projects")
-                  clickSelect(event, projectIndex(), projects().length, (index, activate) => {
-                    const project = projects()[index]
-                    if (!project) return
-                    setSelectedProjectId(project.id)
-                    loadTreesFor(project.id)
-                    if (activate) focusPane("trees")
-                  })
-                }}
-                onMouseScroll={(event) => {
-                  focusPane("projects")
-                  wheelSelect(event, projectIndex(), projects().length, (index) => {
-                    const project = projects()[index]
-                    if (!project) return
-                    setSelectedProjectId(project.id)
-                    loadTreesFor(project.id)
-                  })
-                }}
-                onChange={(_index, option) => {
-                  if (option?.value) {
-                    setSelectedProjectId(String(option.value))
-                    loadTreesFor(String(option.value))
-                  }
-                }}
-                onSelect={(_index, option) => {
-                  if (option?.value) {
-                    setSelectedProjectId(String(option.value))
-                    loadTreesFor(String(option.value))
-                    focusPane("trees")
-                  }
-                }}
-              />
+              <box flexGrow={1} flexDirection="row" ref={(node) => {
+                node.onSizeChange = () => setProjectListHeight(node.height)
+                setProjectListHeight(node.height)
+              }}>
+                <select
+                  ref={(node) => { projectList = node }}
+                  flexGrow={1}
+                  focused={pane() === "projects" && focusRow() === "panes" && !modal() && !menu()}
+                  options={projectOptions()}
+                  selectedIndex={projectIndex()}
+                  showDescription
+                  backgroundColor={theme.panel}
+                  focusedBackgroundColor={theme.panel}
+                  selectedBackgroundColor={theme.selectedBg}
+                  selectedTextColor={theme.selectedFg}
+                  textColor={theme.text}
+                  descriptionColor={theme.muted}
+                  onMouseDown={(event) => {
+                    focusPane("projects")
+                    clickSelect(event, projectIndex(), projects().length, (index, activate) => {
+                      const project = projects()[index]
+                      if (!project) return
+                      setSelectedProjectId(project.id)
+                      loadTreesFor(project.id)
+                      if (event.button === 2) openMenu("projects", event.x, event.y)
+                      if (activate) focusPane("trees")
+                    })
+                  }}
+                  onMouseScroll={(event) => {
+                    focusPane("projects")
+                    wheelSelect(event, projectIndex(), projects().length, (index) => {
+                      const project = projects()[index]
+                      if (!project) return
+                      setSelectedProjectId(project.id)
+                      loadTreesFor(project.id)
+                    })
+                  }}
+                  onChange={(_index, option) => {
+                    if (option?.value) {
+                      setSelectedProjectId(String(option.value))
+                      loadTreesFor(String(option.value))
+                    }
+                  }}
+                  onSelect={(_index, option) => {
+                    if (option?.value) {
+                      setSelectedProjectId(String(option.value))
+                      loadTreesFor(String(option.value))
+                      focusPane("trees")
+                    }
+                  }}
+                />
+                <box width={3} flexShrink={0}>
+                  <box position="absolute" top={selectedRowTop(projectIndex(), projects().length, projectListHeight())} width={3} height={1}>
+                    <ActionButton id="projects-more" label="⋯" compact
+                      active={pane() === "projects" && focusRow() === "pane-actions" && paneActionIndex() === 1}
+                      onPress={() => openMenu("projects")} />
+                  </box>
+                </box>
+              </box>
             </Show>
           </box>
 
@@ -913,94 +971,98 @@ export function App() {
             flexGrow={1}
             border
             borderColor={pane() === "trees" && focusRow() === "panes" ? theme.borderFocus : theme.border}
-            title={`worktrees (${trees().length})`}
             titleColor={pane() === "trees" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
             onMouseDown={() => {
               if (!modal()) focusPane("trees")
             }}
           >
+            <box height={1} flexDirection="row" gap={1}>
+              <ActionButton id="btn-new" label="+" compact disabled={!selectedProject() || busy()}
+                active={pane() === "trees" && focusRow() === "pane-actions" && paneActionIndex() === 0}
+                onPress={() => { focusPane("trees"); openNewTree() }} />
+              <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${trees().length})`}</text>
+            </box>
             <Show
               when={trees().length > 0}
               fallback={<text fg={theme.muted} selectable={false}>no worktrees</text>}
             >
-              <select
-                flexGrow={1}
-                focused={pane() === "trees" && focusRow() === "panes" && !modal()}
-                options={treeOptions()}
-                selectedIndex={treeIndex()}
-                showDescription
-                backgroundColor={theme.panel}
-                focusedBackgroundColor={theme.panel}
-                selectedBackgroundColor={theme.selectedBg}
-                selectedTextColor={theme.selectedFg}
-                textColor={theme.text}
-                descriptionColor={theme.muted}
-                onMouseDown={(event) => {
-                  focusPane("trees")
-                  clickSelect(event, treeIndex(), trees().length, (index, activate) => {
-                    const tree = trees()[index]
-                    if (!tree) return
-                    pickTree(tree.path)
-                    if (activate) toggleServer()
-                  })
-                }}
-                onMouseScroll={(event) => {
-                  focusPane("trees")
-                  wheelSelect(event, treeIndex(), trees().length, (index) => {
-                    const tree = trees()[index]
-                    if (tree) pickTree(tree.path)
-                  })
-                }}
-                onChange={(_index, option) => {
-                  if (option?.value) pickTree(String(option.value))
-                }}
-                onSelect={() => toggleServer()}
-              />
+              <box flexGrow={1} flexDirection="row" ref={(node) => {
+                node.onSizeChange = () => setTreeListHeight(node.height)
+                setTreeListHeight(node.height)
+              }}>
+                <select
+                  ref={(node) => { treeList = node }}
+                  flexGrow={1}
+                  focused={pane() === "trees" && focusRow() === "panes" && !modal() && !menu()}
+                  options={treeOptions()}
+                  selectedIndex={treeIndex()}
+                  showDescription
+                  backgroundColor={theme.panel}
+                  focusedBackgroundColor={theme.panel}
+                  selectedBackgroundColor={theme.selectedBg}
+                  selectedTextColor={theme.selectedFg}
+                  textColor={theme.text}
+                  descriptionColor={theme.muted}
+                  onMouseDown={(event) => {
+                    focusPane("trees")
+                    clickSelect(event, treeIndex(), trees().length, (index, activate) => {
+                      const tree = trees()[index]
+                      if (!tree) return
+                      pickTree(tree.path)
+                      if (event.button === 2) openMenu("trees", event.x, event.y)
+                      if (activate) toggleServer()
+                    })
+                  }}
+                  onMouseScroll={(event) => {
+                    focusPane("trees")
+                    wheelSelect(event, treeIndex(), trees().length, (index) => {
+                      const tree = trees()[index]
+                      if (tree) pickTree(tree.path)
+                    })
+                  }}
+                  onChange={(_index, option) => {
+                    if (option?.value) pickTree(String(option.value))
+                  }}
+                  onSelect={() => toggleServer()}
+                />
+                <box width={3} flexShrink={0}>
+                  <box position="absolute" top={selectedRowTop(treeIndex(), trees().length, treeListHeight())} width={3} height={1}>
+                    <ActionButton id="trees-more" label="⋯" compact
+                      active={pane() === "trees" && focusRow() === "pane-actions" && paneActionIndex() === 1}
+                      onPress={() => openMenu("trees")} />
+                  </box>
+                </box>
+              </box>
             </Show>
           </box>
 
       </box>
 
-      <box height={status() ? 6 : 5} zIndex={2} flexDirection="column">
-        <Show when={status()}>
-          <box paddingLeft={1} paddingRight={1}>
-            <text fg={status().match(/fail|error|not |invalid|already|no /i) ? theme.danger : theme.muted} selectable={false}>{status()}</text>
-          </box>
-        </Show>
-        <box
-          id="footer-actions"
-          border
-          borderColor={focusRow() === "footer" ? theme.borderFocus : theme.border}
-          title="actions"
-          titleColor={focusRow() === "footer" ? theme.accent : theme.muted}
-          backgroundColor={theme.panel}
-          flexDirection="row"
-          gap={1}
-          height={5}
-          alignItems="center"
-          onMouseDown={() => {
-            if (!modal()) setFocusRow("footer")
-          }}
-        >
-          <For each={footerActions()}>
-            {(action, index) => (
-              <ActionButton
-                id={action.id}
-                label={action.label}
-                variant={action.variant}
-                disabled={action.disabled}
-                active={focusRow() === "footer" && footerIndex() === index()}
-                onPress={() => {
-                  setFocusRow("footer")
-                  setFooterIndex(index())
-                  action.onPress()
-                }}
-              />
-            )}
-          </For>
+      <Show when={status()}>
+        <box height={1} paddingLeft={1} paddingRight={1}>
+          <text fg={status().match(/fail|error|not |invalid|already|no /i) ? theme.danger : theme.muted} selectable={false}>{status()}</text>
         </box>
-      </box>
+      </Show>
+
+      <Show when={menu()}>
+        {(current: () => RowMenu) => <>
+          <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={29}
+            onMouseDown={(event) => { event.stopPropagation(); event.preventDefault(); setMenu(null) }}
+            onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
+          <box id="context-menu" position="absolute"
+            left={Math.max(0, Math.min(current().x, dimensions().width - 28))}
+            top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
+            width={Math.min(28, dimensions().width)} height={4} zIndex={30}
+            border borderColor={theme.accent} backgroundColor={theme.panel}
+            onMouseDown={(event) => event.stopPropagation()}>
+            <For each={menuActions()}>{(action, index) =>
+              <ActionButton id={action.id} label={action.label} compact variant={action.variant}
+                disabled={action.disabled} active={menuIndex() === index()} onPress={() => pressMenu(index())} />
+            }</For>
+          </box>
+        </>}
+      </Show>
 
       <Show when={modal()?.kind === "rename-choice"}>
         <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}

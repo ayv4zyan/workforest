@@ -12,6 +12,7 @@ export function ActionButton(props: {
   variant?: Variant
   disabled?: boolean
   active?: boolean
+  compact?: boolean
 }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
@@ -45,15 +46,15 @@ export function ActionButton(props: {
   function press(event: MouseEvent) {
     event.stopPropagation()
     event.preventDefault()
-    if (props.disabled) return
+    if (props.disabled || event.button !== 0) return
     props.onPress()
   }
 
   return (
     <box
       id={props.id}
-      border
-      height={3}
+      border={props.compact ? [] : true}
+      height={props.compact ? 1 : 3}
       paddingLeft={1}
       paddingRight={1}
       flexShrink={0}

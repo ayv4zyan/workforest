@@ -100,8 +100,8 @@ test("renders the workforest shell with clickable controls", async () => {
     expect(frame).toContain("projects (0)")
     expect(frame).toContain("worktrees (0)")
     expect(frame).not.toContain("servers (0)")
-    expect(frame).toContain("add")
-    expect(frame).toContain("actions")
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
+    expect(findById(setup.renderer.root, "footer-actions")).toBeUndefined()
     expect(frame).toContain("refresh")
     expect(frame).toContain("quit")
     expect(frame).not.toContain("detail")
@@ -117,33 +117,33 @@ test("arrow keys cycle focused panes", async () => {
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
     await setup.renderOnce()
-    expect(setup.captureCharFrame()).toContain("add")
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
     expect(setup.captureCharFrame()).not.toContain("kill")
 
     setup.mockInput.pressArrow("right")
     await paint(setup)
     let frame = setup.captureCharFrame()
-    expect(frame).toContain("new")
-    expect(frame).not.toContain("add")
+    expect(findById(setup.renderer.root, "btn-new")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
     expect(frame).not.toContain("kill")
 
     setup.mockInput.pressArrow("right")
     await paint(setup)
     frame = setup.captureCharFrame()
     expect(frame).not.toContain("kill")
-    expect(frame).toContain("add")
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
 
     setup.mockInput.pressArrow("left")
     await paint(setup)
     frame = setup.captureCharFrame()
-    expect(frame).toContain("new")
+    expect(findById(setup.renderer.root, "btn-new")).toBeTruthy()
     expect(frame).not.toContain("kill")
   } finally {
     setup.renderer.destroy()
   }
 })
 
-test("down focuses footer buttons and up returns to panes", async () => {
+test("down focuses pane controls and up returns to panes", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -163,14 +163,14 @@ test("down focuses footer buttons and up returns to panes", async () => {
     setup.mockInput.pressArrow("right")
     await paint(setup)
     const frame = setup.captureCharFrame()
-    expect(frame).toContain("new")
-    expect(frame).not.toContain("add")
+    expect(findById(setup.renderer.root, "btn-new")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
   } finally {
     setup.renderer.destroy()
   }
 })
 
-test("footer actions follow the focused pane", async () => {
+test("pane add buttons remain visible when focus changes", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -186,7 +186,7 @@ test("footer actions follow the focused pane", async () => {
     expect(findById(setup.renderer.root, "btn-start")).toBeUndefined()
     expect(findById(setup.renderer.root, "btn-logs")).toBeUndefined()
     expect(frame).toContain("refresh")
-    expect(frame).not.toContain("add")
+    expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
   } finally {
     setup.renderer.destroy()
   }
@@ -204,7 +204,7 @@ async function openAddProjectModal(setup: {
   expect(setup.captureCharFrame()).toContain("add project")
 }
 
-test("up from panes focuses header, down returns through panes to footer", async () => {
+test("up from panes focuses header, down returns through panes to pane controls", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -318,7 +318,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
   const click = async (id: string) => {
     const button = findById(setup.renderer.root, id)
     expect(button).toBeTruthy()
-    await setup.mockMouse.click(button!.x + 2, button!.y + 1)
+    await setup.mockMouse.click(button!.x + 2, button!.y + Math.floor(button!.height / 2))
     await paint(setup)
   }
   try {
@@ -327,12 +327,17 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await setup.mockMouse.click(row.x, row.y)
     await paint(setup)
     expect(findById(setup.renderer.root, "btn-auto-rename")).toBeUndefined()
+    const more = findById(setup.renderer.root, "trees-more")!
+    await setup.mockMouse.click(more.x + 1, more.y)
+    await paint(setup)
     await click("btn-rename")
     expect(setup.captureCharFrame()).toContain("Choose how to name")
     await click("btn-manual-rename")
     expect(findById(setup.renderer.root, "modal-input")).toBeTruthy()
     expect(setup.captureCharFrame()).toContain("old-feature")
     await click("btn-cancel")
+    await setup.mockMouse.click(more.x + 1, more.y)
+    await paint(setup)
     await click("btn-rename")
     await click("btn-auto-rename")
     expect(setup.captureCharFrame()).toContain("cancel rename")
@@ -383,9 +388,7 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
     const refreshButton = findById(setup.renderer.root, "btn-refresh")!
     expect(findById(setup.renderer.root, "btn-start")!.y).toBe(refreshButton.y)
     expect(findById(setup.renderer.root, "btn-logs")!.y).toBe(refreshButton.y)
-    const footer = findById(setup.renderer.root, "footer-actions")!
-    expect(findById(footer, "btn-start")).toBeUndefined()
-    expect(findById(footer, "btn-logs")).toBeUndefined()
+    expect(findById(setup.renderer.root, "footer-actions")).toBeUndefined()
     expect(findById(setup.renderer.root, "pane-servers")).toBeUndefined()
     setup.mockInput.pressArrow("right")
     await paint(setup)
@@ -465,3 +468,138 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
     rmSync(root, { recursive: true, force: true })
   }
 }, 15000)
+
+test("row menus target the clicked item, protect main, and support mouse and keyboard", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-menu-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  process.env.WORKFOREST_HOME = home
+  const repos = [join(root, "alpha"), join(root, "beta")]
+  for (const repo of repos) {
+    mkdirSync(repo)
+    gitOk(repo, ["init", "-b", "main"])
+    gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+    addProject(home, repo)
+  }
+  const project = loadConfig(home).projects[1]!
+  const tree = createWorktree({ repoPath: repos[1]!, home, projectId: project.id, name: "feature-menu" })
+  const setup = await testRender(() => <App />, { width: 90, height: 18 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const rightClick = async (label: string) => {
+    const at = findText(setup.captureCharFrame(), label)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  try {
+    await paint(setup)
+    await rightClick("beta")
+    expect(setup.captureCharFrame()).toContain("Edit start command")
+    expect(setup.captureCharFrame()).toContain("Remove from list")
+    await click("btn-command")
+    await setup.mockInput.typeText("bun dev")
+    await click("btn-submit")
+    expect(loadConfig(home).projects[1]?.startCommand).toBe("bun dev")
+    expect(loadConfig(home).projects[0]?.startCommand).toBeUndefined()
+
+    const featureRow = findText(setup.captureCharFrame(), "feature-menu")
+    await rightClick("feature-menu")
+    expect(findById(setup.renderer.root, "context-menu")).toBeTruthy()
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+    const more = findById(setup.renderer.root, "trees-more")!
+    expect(more.y).toBe(featureRow.y)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    // Right-clicking the already selected worktree must not start its server.
+    await rightClick("feature-menu")
+    expect(loadRunRecords(home)).toEqual([])
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+    await setup.mockMouse.click(0, 0)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
+
+    await rightClick("(main)")
+    await click("btn-delete")
+    expect(findById(setup.renderer.root, "context-menu")).toBeTruthy()
+    await click("btn-rename")
+    expect(findById(setup.renderer.root, "btn-manual-rename")).toBeUndefined()
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(findById(setup.renderer.root, "context-menu")).toBeTruthy()
+    setup.mockInput.pressEscape()
+    await paint(setup)
+
+    const feature = findText(setup.captureCharFrame(), "feature-menu")
+    await setup.mockMouse.click(feature.x, feature.y)
+    await paint(setup)
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    const menu = findById(setup.renderer.root, "context-menu")!
+    expect(menu.x + menu.width).toBeLessThanOrEqual(90)
+    expect(menu.y + menu.height).toBeLessThanOrEqual(18)
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("Delete feature-menu?")
+    await click("btn-cancel")
+    expect(listWorktrees(repos[1]!)).toHaveLength(2)
+    await rightClick("feature-menu")
+    await click("btn-delete")
+    await click("btn-submit")
+    expect(listWorktrees(repos[1]!)).toHaveLength(1)
+
+    await click("projects-more")
+    await click("btn-unregister")
+    expect(setup.captureCharFrame()).toContain("Remove beta from the list?")
+    await click("btn-submit")
+    expect(loadConfig(home).projects.map((row) => row.name)).toEqual(["alpha"])
+    expect(listWorktrees(repos[1]!)).toHaveLength(1)
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("selected row menu follows scrolling and stays inside a resized terminal", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-scroll-menu-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  for (let i = 0; i < 8; i++) createWorktree({ repoPath: repo, home, projectId: project.id, name: `item-${i}` })
+  const setup = await testRender(() => <App />, { width: 90, height: 18 })
+  try {
+    await paint(setup)
+    setup.mockInput.pressArrow("right")
+    for (let i = 0; i < 8; i++) {
+      await setup.mockMouse.scroll(35, 6, "down")
+      await paint(setup)
+    }
+    let more = findById(setup.renderer.root, "trees-more")!
+    expect(more.y).toBe(findText(setup.captureCharFrame(), "item-7").y)
+    setup.renderer.resize(80, 14)
+    await paint(setup)
+    more = findById(setup.renderer.root, "trees-more")!
+    expect(more.y).toBe(findText(setup.captureCharFrame(), "item-7").y)
+    await setup.mockMouse.click(more.x + 1, more.y)
+    await paint(setup)
+    const menu = findById(setup.renderer.root, "context-menu")!
+    expect(menu.x + menu.width).toBeLessThanOrEqual(80)
+    expect(menu.y + menu.height).toBeLessThanOrEqual(14)
+    expect(setup.captureCharFrame()).toContain("Rename")
+    expect(setup.captureCharFrame()).toContain("Delete")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
