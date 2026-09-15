@@ -902,6 +902,26 @@ export function App() {
     return "error" in current ? current.error : undefined
   }
 
+  function modalSize(current: Modal) {
+    const terminalWidth = dimensions().width
+    const terminalHeight = dimensions().height
+    const preferredWidth = current.kind === "logs"
+      ? terminalWidth - 16
+      : current.kind === "stop" ? 116
+      : current.kind === "start-command" ? 88 : 76
+    const preferredHeight = current.kind === "logs"
+      ? Math.floor(terminalHeight * 0.7)
+      : 12
+    const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
+    const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
+    return {
+      width,
+      height,
+      left: Math.max(0, Math.floor((terminalWidth - width) / 2)),
+      top: Math.max(0, Math.floor((terminalHeight - height) / 2)),
+    }
+  }
+
   return (
     <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
       <box height={3} zIndex={2} paddingLeft={1} paddingRight={1} flexDirection="row" alignItems="center" justifyContent="space-between" backgroundColor={theme.header}>
@@ -1190,10 +1210,10 @@ export function App() {
         {(current: () => Modal) => (
           <box
             position="absolute"
-            left={8}
-            right={8}
-            top={6}
-            height={current().kind === "logs" ? "70%" : 12}
+            left={modalSize(current()).left}
+            top={modalSize(current()).top}
+            width={modalSize(current()).width}
+            height={modalSize(current()).height}
             zIndex={20}
             border
             borderColor={theme.accent}
@@ -1205,7 +1225,7 @@ export function App() {
             gap={1}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <text fg={theme.text} selectable={false}>{modalBody(current())}</text>
+            <text height={current().kind === "logs" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
             {current().kind === "logs" ? (
               <>
                 <scrollbox flexGrow={1} focused={true}>
