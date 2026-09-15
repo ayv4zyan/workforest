@@ -384,7 +384,7 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
   }
   try {
     await paint(setup)
-    expect(setup.captureCharFrame()).toContain("Stopped")
+    expect(setup.captureCharFrame()).toContain("○")
     expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("▶")
     const refreshButton = findById(setup.renderer.root, "btn-refresh")!
     expect(findById(setup.renderer.root, "btn-start")!.y).toBe(refreshButton.y)
@@ -427,9 +427,9 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
     for (let i = 0; i < 20; i++) {
       await Bun.sleep(50)
       await click("btn-refresh")
-      if (setup.captureCharFrame().includes("Stopped")) break
+      if (setup.captureCharFrame().includes("○")) break
     }
-    expect(setup.captureCharFrame()).toContain("Stopped")
+    expect(setup.captureCharFrame()).toContain("○")
     expect(loadRunRecords(home)).toEqual([])
     writeFileSync(join(repo, "server.ts"), 'console.error("startup failed example"); process.exit(1)')
     await click("btn-start")
@@ -519,6 +519,13 @@ test("row menus target the clicked item, protect main, and support mouse and key
     await setup.mockMouse.click(0, 0)
     await paint(setup)
     expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
+
+    const feature = findText(setup.captureCharFrame(), "feature-menu")
+    await setup.mockMouse.click(feature.x, feature.y)
+    await setup.mockMouse.click(feature.x, feature.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+    expect(loadRunRecords(home)).toEqual([])
 
     await rightClick("(main)")
     await click("btn-delete")

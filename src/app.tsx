@@ -16,6 +16,7 @@ import {
   worktreeDisplayName,
 } from "./lib/git.ts"
 import { workforestHome } from "./lib/home.ts"
+import { displayPath } from "./lib/display-path.ts"
 import { loadPorts, pickPort, movePort } from "./lib/ports.ts"
 import {
   collectServers,
@@ -93,14 +94,14 @@ export function App() {
   const projectOptions = (): SelectOption[] =>
     projects().map((project) => ({
       name: project.name,
-      description: project.path,
+      description: displayPath(project.path),
       value: project.id,
     }))
 
   const treeOptions = (): SelectOption[] =>
     trees().map((tree) => ({
       name: `${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}  ${serverStatus(serversForWorktree(servers(), tree.path))}`,
-      description: `${tree.branch ?? "detached"}  ${tree.path}`,
+      description: `${tree.branch ?? "detached"}  ${displayPath(tree.path)}`,
       value: tree.path,
     }))
 
@@ -295,6 +296,14 @@ export function App() {
       { id: "btn-auto-rename", label: "Auto", disabled: !selectedTree()?.branch, onPress: () => void autoRename() },
     ]
   }
+
+  function actionMenuWidth(actions: Action[], maxWidth = 24): number {
+    const contentWidth = Math.max(...actions.map((action) => action.label.length + (action.trailingLabel ? action.trailingLabel.length + 1 : 0)))
+    return Math.min(dimensions().width, maxWidth, Math.max(12, contentWidth + 4))
+  }
+
+  const contextMenuWidth = () => actionMenuWidth(menuActions())
+  const renameSubmenuWidth = () => actionMenuWidth(submenuActions(), 20)
 
   function pressSubmenu(index = submenuIndex()) {
     const action = submenuActions()[index]
@@ -1014,12 +1023,11 @@ export function App() {
                   descriptionColor={theme.muted}
                   onMouseDown={(event) => {
                     focusPane("trees")
-                    clickSelect(event, treeIndex(), trees().length, (index, activate) => {
+                    clickSelect(event, treeIndex(), trees().length, (index) => {
                       const tree = trees()[index]
                       if (!tree) return
                       pickTree(tree.path)
                       if (event.button === 2) openMenu("trees", event.x, event.y)
-                      if (activate) toggleServer()
                     })
                   }}
                   onMouseScroll={(event) => {
@@ -1032,7 +1040,6 @@ export function App() {
                   onChange={(_index, option) => {
                     if (option?.value) pickTree(String(option.value))
                   }}
-                  onSelect={() => toggleServer()}
                 />
               </box>
             </Show>
@@ -1052,9 +1059,9 @@ export function App() {
             onMouseDown={(event) => { event.stopPropagation(); event.preventDefault(); setMenu(null) }}
             onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
           <box id="context-menu" position="absolute"
-            left={Math.max(0, Math.min(current().x, dimensions().width - 28))}
+            left={Math.max(0, Math.min(current().x, dimensions().width - contextMenuWidth()))}
             top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
-            width={Math.min(28, dimensions().width)} height={4} zIndex={30}
+            width={contextMenuWidth()} height={4} zIndex={30}
             border borderColor={theme.accent} backgroundColor={theme.panel}
             onMouseDown={(event) => event.stopPropagation()}>
             <For each={menuActions()}>{(action, index) =>
@@ -1073,11 +1080,13 @@ export function App() {
           <Show when={current().renameOpen}>
             <box id="rename-submenu" position="absolute"
               left={(() => {
-                const mainLeft = Math.max(0, Math.min(current().x, dimensions().width - 28))
-                return mainLeft + 43 <= dimensions().width ? mainLeft + 27 : Math.max(0, mainLeft - 15)
+                const mainLeft = Math.max(0, Math.min(current().x, dimensions().width - contextMenuWidth()))
+                return mainLeft + contextMenuWidth() + renameSubmenuWidth() - 1 <= dimensions().width
+                  ? mainLeft + contextMenuWidth() - 1
+                  : Math.max(0, mainLeft - renameSubmenuWidth() + 1)
               })()}
               top={Math.max(0, Math.min(current().y, dimensions().height - 4))}
-              width={Math.min(16, dimensions().width)} height={4} zIndex={31}
+              width={renameSubmenuWidth()} height={4} zIndex={31}
               border borderColor={theme.accent} backgroundColor={theme.panel}
               onMouseDown={(event) => event.stopPropagation()}>
               <For each={submenuActions()}>{(action, index) =>

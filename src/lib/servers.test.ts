@@ -91,7 +91,7 @@ test("resolveDevTarget prefers root web:dev then nested vite", () => {
 
 test("server status distinguishes startup, failure, external and multiple servers", () => {
   const row = { pid: 123, port: 5173, command: "bun", worktreePath: "/tmp/tree", projectId: "p", owned: true }
-  expect(serverStatus([])).toBe("○ Stopped")
+  expect(serverStatus([])).toBe("○")
   expect(serverStatus([{ ...row, state: "starting" }])).toContain("Starting · :5173")
   expect(serverStatus([{ ...row, state: "failed" }])).toContain("Failed · view logs")
   expect(serverStatus([row, { ...row, pid: 456, port: 5174, owned: false }])).toBe("● Running · :5173, :5174 · 2 servers · external")

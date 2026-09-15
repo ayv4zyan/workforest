@@ -281,7 +281,7 @@ export function serversForWorktree(rows: ServerRow[], worktreePath: string): Ser
 
 export function serverStatus(rows: ServerRow[]): string {
   const active = rows.filter((row) => row.state !== "failed")
-  if (!active.length) return rows.some((row) => row.state === "failed") ? "! Failed · view logs" : "○ Stopped"
+  if (!active.length) return rows.some((row) => row.state === "failed") ? "! Failed · view logs" : "○"
   const ports = [...new Set(active.map((row) => row.port))].map((port) => `:${port}`).join(", ")
   const label = active.every((row) => row.state === "starting") ? "◌ Starting" : "● Running"
   const count = active.length > 1 ? ` · ${active.length} servers` : ""
