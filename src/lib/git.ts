@@ -1,6 +1,6 @@
 import { mkdirSync, realpathSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
-import { exec, execOk } from "./exec.ts"
+import { exec, execOk, execOkAsync } from "./exec.ts"
 import { projectTreesDir } from "./home.ts"
 import { isWorktreeName } from "./slug.ts"
 import type { GitWorktree } from "./types.ts"
@@ -159,4 +159,13 @@ export function removeWorktree(opts: { repoPath: string; tree: GitWorktree; forc
   if (force) args.push("--force")
   args.push(tree.path)
   gitOk(repoPath, args)
+}
+
+export async function removeWorktreeAsync(opts: { repoPath: string; tree: GitWorktree; force?: boolean }): Promise<void> {
+  const { repoPath, tree, force } = opts
+  if (tree.isMain) throw new Error("Cannot delete the main worktree")
+  const args = ["worktree", "remove"]
+  if (force) args.push("--force")
+  args.push(tree.path)
+  await execOkAsync(["git", ...args], { cwd: repoPath })
 }

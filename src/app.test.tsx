@@ -619,6 +619,87 @@ test("row menus target the clicked item, protect main, and support mouse and key
   }
 })
 
+test("worktree deletion renders its busy state while git is still running", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-delete-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const repo = join(root, "repo")
+  const home = join(root, "home")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "slow-delete" })
+  const realGit = Bun.which("git")!
+  const bin = join(root, "bin")
+  const shim = join(bin, "git")
+  mkdirSync(bin)
+  writeFileSync(shim, `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[0] === "worktree" && args[1] === "remove") await Bun.sleep(350)
+const child = Bun.spawnSync([${JSON.stringify(realGit)}, ...args], { cwd: process.cwd(), stdout: "inherit", stderr: "inherit" })
+process.exit(child.exitCode)
+`)
+  chmodSync(shim, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 120, height: 28 })
+  try {
+    await paint(setup)
+    const row = findText(setup.captureCharFrame(), "slow-delete")
+    await setup.mockMouse.click(row.x, row.y, 2)
+    await paint(setup)
+    const deleteButton = findById(setup.renderer.root, "btn-delete")!
+    await setup.mockMouse.click(deleteButton.x + 1, deleteButton.y + Math.floor(deleteButton.height / 2))
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toContain("confirm or cancel")
+    const submit = findById(setup.renderer.root, "btn-submit")!
+    const modal = submit.parent?.parent
+    expect(modal).toBeTruthy()
+    expect(submit.y + submit.height).toBeLessThanOrEqual(modal!.y + modal!.height - 2)
+    await setup.mockMouse.click(submit.x + 1, submit.y + 1)
+    await paint(setup)
+
+    expect(setup.captureCharFrame()).toContain("deleting")
+    expect(listWorktrees(repo).some((row) => row.path === tree.path)).toBe(true)
+
+    for (let i = 0; i < 30 && listWorktrees(repo).some((row) => row.path === tree.path); i++) await paint(setup)
+    expect(listWorktrees(repo).some((row) => row.path === tree.path)).toBe(false)
+  } finally {
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("input modal keeps its action buttons inside the bottom padding", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-modal-layout-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const repo = join(root, "repo")
+  const home = join(root, "home")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  addProject(home, repo)
+  const setup = await testRender(() => <App />, { width: 130, height: 44 })
+  try {
+    await paint(setup)
+    const button = findById(setup.renderer.root, "btn-new")!
+    await setup.mockMouse.click(button.x + 1, button.y)
+    await paint(setup)
+    const submit = findById(setup.renderer.root, "btn-submit")!
+    const modal = submit.parent?.parent
+    expect(modal).toBeTruthy()
+    expect(submit.y + submit.height).toBeLessThanOrEqual(modal!.y + modal!.height - 2)
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("selected row menu follows scrolling and stays inside a resized terminal", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-scroll-menu-")))
   const oldHome = process.env.WORKFOREST_HOME

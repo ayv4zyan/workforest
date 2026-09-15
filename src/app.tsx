@@ -11,7 +11,7 @@ import {
   createWorktree,
   isDirty,
   listWorktrees,
-  removeWorktree,
+  removeWorktreeAsync,
   renameWorktree,
   worktreeDisplayName,
 } from "./lib/git.ts"
@@ -188,12 +188,12 @@ export function App() {
     setSelectedTreePath(path)
   }
 
-  function runOp(label: string, fn: () => string | void) {
+  async function runOp(label: string, fn: () => string | void | Promise<string | void>) {
     if (busy()) return
     setBusy(true)
     setStatus(label)
     try {
-      const message = fn()
+      const message = await fn()
       refresh()
       setStatus(message ?? "ok")
     } catch (error) {
@@ -778,9 +778,9 @@ export function App() {
       const project = selectedProject()
       const tree = selectedTree()
       if (!project || !tree) return
-      runOp("deleting", () => {
+      runOp("deleting", async () => {
         for (const row of serversForWorktree(servers(), tree.path).filter((row) => row.state !== "failed")) stopServer(dataDir(), row)
-        removeWorktree({ repoPath: project.path, tree, force: tree.dirty })
+        await removeWorktreeAsync({ repoPath: project.path, tree, force: tree.dirty })
         forgetWorktreeRuntime(dataDir(), project.id, tree.path)
         return `deleted ${tree.displayName}`
       })
@@ -881,7 +881,7 @@ export function App() {
       case "start":
         return `Port (1024–65535). Command: ${current.project.startCommand}`
       case "logs":
-        return "Recent output"
+        return ""
       case "stop":
         return `Stop ${current.rows.map((row) => `:${row.port} (pid ${row.pid}, ${row.owned ? "Workforest" : "external"})`).join(", ")}? External processes were started outside Workforest.`
     }
@@ -911,7 +911,7 @@ export function App() {
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
-      : 12
+      : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
     return {
@@ -1225,7 +1225,9 @@ export function App() {
             gap={1}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <text height={current().kind === "logs" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
+            <Show when={current().kind !== "logs"}>
+              <text height={2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
+            </Show>
             {current().kind === "logs" ? (
               <>
                 <scrollbox flexGrow={1} focused={true}>
@@ -1256,9 +1258,7 @@ export function App() {
                       if (now && "value" in now) submitModal(now.value)
                     }}
                   />
-                ) : (
-                  <text fg={theme.muted} selectable={false}>confirm or cancel</text>
-                )}
+                ) : null}
                 <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
                 <box flexDirection="row" gap={1}>
                   <ActionButton
