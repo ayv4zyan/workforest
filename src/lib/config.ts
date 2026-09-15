@@ -25,6 +25,12 @@ export function saveConfig(home: string, config: Config): void {
   writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
 }
 
+export function setProjectPaneWidth(home: string, width: number): void {
+  const config = loadConfig(home)
+  config.ui = { ...config.ui, projectPaneWidth: width }
+  saveConfig(home, config)
+}
+
 export function addProject(home: string, rawPath: string, name?: string): Project {
   const expanded = expandPath(rawPath)
   if (!isGitRepo(expanded)) {

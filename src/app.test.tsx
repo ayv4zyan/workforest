@@ -112,6 +112,44 @@ test("renders the workforest shell with clickable controls", async () => {
   }
 })
 
+test("dragging the pane divider resizes and persists the projects pane", async () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-resize-"))
+  process.env.WORKFOREST_HOME = home
+  const setup = await testRender(() => <App />, { width: 140, height: 36 })
+  try {
+    await setup.renderOnce()
+    const divider = findById(setup.renderer.root, "pane-divider")
+    const projects = findById(setup.renderer.root, "pane-projects")
+    expect(divider).toBeTruthy()
+    expect(projects?.width).toBe(28)
+    const dividerRow = setup.captureCharFrame().split("\n")[divider!.y + 3]!
+    expect(divider!.width).toBe(1)
+    expect(dividerRow[divider!.x]).toBe("│")
+    expect(setup.captureCharFrame().split("\n")[divider!.y]![divider!.x]).toBe("┐")
+    expect(setup.captureCharFrame().split("\n")[divider!.y + divider!.height - 1]![divider!.x]).toBe("┘")
+
+    setup.mockInput.pressArrow("right")
+    await paint(setup)
+    expect(setup.captureCharFrame().split("\n")[divider!.y]![divider!.x]).toBe("┌")
+    expect(setup.captureCharFrame().split("\n")[divider!.y + divider!.height - 1]![divider!.x]).toBe("└")
+    setup.mockInput.pressArrow("left")
+    await paint(setup)
+
+    await setup.mockMouse.drag(divider!.x, divider!.y + 3, 40, divider!.y + 3)
+    await setup.flush()
+
+    expect(projects?.width).toBe(40)
+    expect(loadConfig(home).ui?.projectPaneWidth).toBe(40)
+
+    await setup.mockMouse.doubleClick(40, divider!.y + 3)
+    await setup.flush()
+    expect(projects?.width).toBe(28)
+    expect(loadConfig(home).ui?.projectPaneWidth).toBe(28)
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
 test("arrow keys cycle focused panes", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })

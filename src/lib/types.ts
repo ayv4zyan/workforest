@@ -9,6 +9,9 @@ export type Project = {
 export type Config = {
   version: 1
   projects: Project[]
+  ui?: {
+    projectPaneWidth?: number
+  }
 }
 
 export type GitWorktree = {

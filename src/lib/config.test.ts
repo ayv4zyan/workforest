@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { addProject, loadConfig, removeProject, setProjectStartCommand } from "./config.ts"
+import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand } from "./config.ts"
 import { execOk } from "./exec.ts"
 
 function initRepo(): string {
@@ -39,4 +39,13 @@ test("start commands persist per project and reject empty commands", () => {
   expect(() => setProjectStartCommand(home, first.id, "  ")).toThrow("command required")
   expect(() => setProjectStartCommand(home, "missing", "bun local")).toThrow("Unknown project")
   expect(setProjectStartCommand(home, first.id, "bun run preview").startCommand).toBe("bun run preview")
+})
+
+test("project pane width persists without changing projects", () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-layout-home-"))
+  const project = addProject(home, initRepo())
+  setProjectPaneWidth(home, 42)
+  const config = loadConfig(home)
+  expect(config.ui?.projectPaneWidth).toBe(42)
+  expect(config.projects.map((row) => row.id)).toEqual([project.id])
 })

@@ -5,7 +5,7 @@ import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
 import { nextIndex, pickSelectIndex } from "./lib/select-hit.ts"
 import { ActionButton } from "./ui/button.tsx"
-import { addProject, loadConfig, removeProject, setProjectStartCommand } from "./lib/config.ts"
+import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand } from "./lib/config.ts"
 import { setupWorktreeDeps } from "./lib/deps.ts"
 import {
   createWorktree,
@@ -44,6 +44,9 @@ type Action = {
 }
 
 const panes: Pane[] = ["projects", "trees"]
+const defaultProjectPaneWidth = 28
+const minProjectPaneWidth = 16
+const minTreePaneWidth = 24
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
   | { kind: "add-project"; value: string; error?: string }
@@ -82,6 +85,29 @@ export function App() {
   let renameRequest: AbortController | undefined
   onCleanup(() => renameRequest?.abort())
   const [modal, setModal] = createSignal<Modal | null>(null)
+  const [projectPaneWidth, setProjectPaneWidthState] = createSignal(defaultProjectPaneWidth)
+  const [dividerHovered, setDividerHovered] = createSignal(false)
+  const [dividerDragging, setDividerDragging] = createSignal(false)
+  let lastDividerClick = 0
+  let dividerMoved = false
+
+  const clampProjectPaneWidth = (width: number) => {
+    const available = dimensions().width - 1
+    const maximum = Math.max(8, Math.min(Math.floor(available / 2), available - minTreePaneWidth))
+    const minimum = Math.min(minProjectPaneWidth, maximum)
+    return Math.max(minimum, Math.min(maximum, Math.round(width)))
+  }
+
+  const visibleProjectPaneWidth = () => clampProjectPaneWidth(projectPaneWidth())
+  const dividerColor = () => dividerDragging() || dividerHovered() || focusRow() === "panes" ? theme.accent : theme.border
+
+  function persistProjectPaneWidth() {
+    try {
+      setProjectPaneWidth(dataDir(), projectPaneWidth())
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
+    }
+  }
 
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
   const selectedTree = () => trees().find((tree) => tree.path === selectedTreePath()) ?? null
@@ -189,6 +215,10 @@ export function App() {
 
   onMount(() => {
     try {
+      const savedWidth = loadConfig(dataDir()).ui?.projectPaneWidth
+      if (typeof savedWidth === "number" && Number.isFinite(savedWidth)) {
+        setProjectPaneWidthState(Math.round(savedWidth))
+      }
       refresh()
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error))
@@ -929,11 +959,31 @@ export function App() {
         </box>
       </box>
 
-      <box flexGrow={1} flexDirection="row">
+      <box
+        flexGrow={1}
+        flexDirection="row"
+        onMouseDrag={(event) => {
+          if (!dividerDragging()) return
+          event.stopPropagation()
+          event.preventDefault()
+          dividerMoved = true
+          setProjectPaneWidthState(clampProjectPaneWidth(event.x))
+        }}
+        onMouseUp={() => {
+          if (dividerDragging() && !dividerMoved) lastDividerClick = Date.now()
+          setDividerDragging(false)
+        }}
+        onMouseDragEnd={() => {
+          if (!dividerDragging()) return
+          setDividerDragging(false)
+          lastDividerClick = 0
+          persistProjectPaneWidth()
+        }}
+      >
           <box
             id="pane-projects"
-            width={28}
-            border
+            width={visibleProjectPaneWidth()}
+            border={["top", "bottom", "left"]}
             borderColor={pane() === "projects" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             titleColor={pane() === "projects" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
@@ -1016,9 +1066,46 @@ export function App() {
           </box>
 
           <box
+            id="pane-divider"
+            width={1}
+            border={["top", "bottom", "left"]}
+            borderColor={dividerColor()}
+            customBorderChars={{
+              topLeft: pane() === "projects" ? "┐" : "┌",
+              topRight: pane() === "projects" ? "┐" : "┌",
+              bottomLeft: pane() === "projects" ? "┘" : "└",
+              bottomRight: pane() === "projects" ? "┘" : "└",
+              horizontal: "─",
+              vertical: "│",
+              topT: "┬",
+              bottomT: "┴",
+              leftT: "├",
+              rightT: "┤",
+              cross: "┼",
+            }}
+            onMouseOver={() => setDividerHovered(true)}
+            onMouseOut={() => setDividerHovered(false)}
+            onMouseDown={(event) => {
+              if (modal() || event.button !== 0) return
+              event.stopPropagation()
+              event.preventDefault()
+              const now = Date.now()
+              if (now - lastDividerClick < 350) {
+                setProjectPaneWidthState(defaultProjectPaneWidth)
+                setDividerDragging(false)
+                persistProjectPaneWidth()
+                lastDividerClick = 0
+                return
+              }
+              dividerMoved = false
+              setDividerDragging(true)
+            }}
+          />
+
+          <box
             id="pane-trees"
             flexGrow={1}
-            border
+            border={["top", "right", "bottom"]}
             borderColor={pane() === "trees" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             titleColor={pane() === "trees" && focusRow() === "panes" ? theme.accent : theme.muted}
             backgroundColor={theme.panel}
