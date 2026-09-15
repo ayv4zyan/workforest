@@ -1,6 +1,7 @@
 export const theme = {
   bg: "#0d1117",
   panel: "#161b22",
+  hoverBg: "#1c252d",
   header: "#010409",
   border: "#30363d",
   borderFocus: "#3fb950",
@@ -8,6 +9,7 @@ export const theme = {
   muted: "#8b949e",
   accent: "#3fb950",
   selectedBg: "#144620",
+  selectedHoverBg: "#1b5e2a",
   selectedFg: "#aff5b4",
   danger: "#f85149",
   warn: "#d29922",

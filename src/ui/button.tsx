@@ -34,14 +34,15 @@ export function ActionButton(props: {
   const fg = () => {
     if (props.disabled) return theme.muted
     if (variant() === "danger") return theme.danger
-    if (variant() === "accent" || hover() || props.active) return theme.selectedFg
+    if (variant() === "accent" || props.active) return theme.selectedFg
     return theme.text
   }
 
   const bg = () => {
     if (props.disabled) return theme.panel
-    if ((hover() || props.active) && variant() === "danger") return "#3d1114"
-    if (hover() || props.active) return theme.selectedBg
+    if (props.active && variant() === "danger") return "#3d1114"
+    if (props.active) return theme.selectedBg
+    if (hover()) return theme.hoverBg
     return theme.panel
   }
 

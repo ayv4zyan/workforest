@@ -1,9 +1,9 @@
 import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { MouseEvent, SelectOption, SelectRenderable } from "@opentui/core"
+import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
-import { nextIndex, pickSelectIndex } from "./lib/select-hit.ts"
+import { nextIndex } from "./lib/select-hit.ts"
 import { ActionButton } from "./ui/button.tsx"
 import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand } from "./lib/config.ts"
 import { setupWorktreeDeps } from "./lib/deps.ts"
@@ -69,8 +69,8 @@ export function App() {
   const [submenuIndex, setSubmenuIndex] = createSignal(0)
   const [projectListHeight, setProjectListHeight] = createSignal(0)
   const [treeListHeight, setTreeListHeight] = createSignal(0)
-  let projectList: SelectRenderable | undefined
-  let treeList: SelectRenderable | undefined
+  let projectList: BoxRenderable | undefined
+  let treeList: BoxRenderable | undefined
   const [pane, setPane] = createSignal<Pane>("projects")
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
   const [headerIndex, setHeaderIndex] = createSignal(0)
@@ -86,6 +86,8 @@ export function App() {
   onCleanup(() => renameRequest?.abort())
   const [modal, setModal] = createSignal<Modal | null>(null)
   const [projectPaneWidth, setProjectPaneWidthState] = createSignal(defaultProjectPaneWidth)
+  const [hoveredProjectIndex, setHoveredProjectIndex] = createSignal<number | null>(null)
+  const [hoveredTreeIndex, setHoveredTreeIndex] = createSignal<number | null>(null)
   const [dividerHovered, setDividerHovered] = createSignal(false)
   const [dividerDragging, setDividerDragging] = createSignal(false)
   let lastDividerClick = 0
@@ -117,23 +119,11 @@ export function App() {
   }
   const activeServers = () => treeServers().filter((row) => row.state !== "failed")
 
-  const projectOptions = (): SelectOption[] =>
-    projects().map((project) => ({
-      name: project.name,
-      description: "",
-      value: project.id,
-    }))
-
-  const treeOptions = (): SelectOption[] =>
-    trees().map((tree) => {
-      const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")
-      const status = statusParts.join(" ")
-      return {
-        name: `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`,
-        description: `${tree.branch ?? "detached"}  ${displayPath(tree.path)}`,
-        value: tree.path,
-      }
-    })
+  const visibleRows = <T,>(rows: T[], selected: number, height: number, linesPerItem: number) => {
+    const count = Math.max(1, Math.floor(height / linesPerItem))
+    const offset = Math.max(0, Math.min(selected - Math.floor(count / 2), rows.length - count))
+    return rows.slice(offset, offset + count).map((row, index) => ({ row, index: offset + index }))
+  }
 
   function refresh() {
     const config = loadConfig(dataDir())
@@ -313,7 +303,7 @@ export function App() {
   }
 
   function selectedRowTop(index: number, count: number, height: number, linesPerItem: number) {
-    // Match the centered scrolling used by Select and pickSelectIndex.
+    // Keep the selected row centered when the list is longer than its viewport.
     const visible = Math.max(1, Math.floor(height / linesPerItem))
     const offset = Math.max(0, Math.min(index - Math.floor(visible / 2), count - visible))
     return (index - offset) * linesPerItem
@@ -541,23 +531,6 @@ export function App() {
       return
     }
     confirmModal()
-  }
-
-  function clickSelect(
-    event: MouseEvent,
-    selectedIndex: number,
-    count: number,
-    onPick: (index: number, activate: boolean) => void,
-    linesPerItem = 2,
-  ) {
-    event.stopPropagation()
-    event.preventDefault()
-    if (modal() || menu() || (event.button !== 0 && event.button !== 2)) return
-    const target = event.currentTarget
-    if (!target) return
-    const index = pickSelectIndex(event.y - target.y, target.height, selectedIndex, count, linesPerItem)
-    if (index == null) return
-    onPick(index, event.button === 0 && index === selectedIndex)
   }
 
   function wheelSelect(event: MouseEvent, selectedIndex: number, count: number, onPick: (index: number) => void) {
@@ -1014,30 +987,11 @@ export function App() {
                 node.onSizeChange = () => setProjectListHeight(node.height)
                 setProjectListHeight(node.height)
               }}>
-                <select
+                <box
                   ref={(node) => { projectList = node }}
                   flexGrow={1}
-                  focused={pane() === "projects" && focusRow() === "panes" && !modal() && !menu()}
-                  options={projectOptions()}
-                  selectedIndex={projectIndex()}
-                  showDescription={false}
-                  backgroundColor={theme.panel}
-                  focusedBackgroundColor={theme.panel}
-                  selectedBackgroundColor={theme.selectedBg}
-                  selectedTextColor={theme.selectedFg}
-                  textColor={theme.text}
-                  descriptionColor={theme.muted}
-                  onMouseDown={(event) => {
-                    focusPane("projects")
-                    clickSelect(event, projectIndex(), projects().length, (index, activate) => {
-                      const project = projects()[index]
-                      if (!project) return
-                      setSelectedProjectId(project.id)
-                      loadTreesFor(project.id)
-                      if (event.button === 2) openMenu("projects", event.x, event.y)
-                      if (activate) focusPane("trees")
-                    }, 1)
-                  }}
+                  flexDirection="column"
+                  overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("projects")
                     wheelSelect(event, projectIndex(), projects().length, (index) => {
@@ -1047,20 +1001,28 @@ export function App() {
                       loadTreesFor(project.id)
                     })
                   }}
-                  onChange={(_index, option) => {
-                    if (option?.value) {
-                      setSelectedProjectId(String(option.value))
-                      loadTreesFor(String(option.value))
-                    }
-                  }}
-                  onSelect={(_index, option) => {
-                    if (option?.value) {
-                      setSelectedProjectId(String(option.value))
-                      loadTreesFor(String(option.value))
-                      focusPane("trees")
-                    }
-                  }}
-                />
+                >
+                  <For each={visibleRows(projects(), projectIndex(), projectListHeight(), 1)}>{({ row: project, index }) => {
+                    const selected = () => index === projectIndex()
+                    return <box height={1} flexShrink={0} overflow="hidden"
+                      backgroundColor={selected()
+                        ? hoveredProjectIndex() === index ? theme.selectedHoverBg : theme.selectedBg
+                        : hoveredProjectIndex() === index ? theme.hoverBg : theme.panel}
+                      onMouseOver={() => { setHoveredProjectIndex(index); renderer.setMousePointer("pointer") }}
+                      onMouseOut={() => { setHoveredProjectIndex(null); renderer.setMousePointer("default") }}
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                        if (modal() || menu() || (event.button !== 0 && event.button !== 2)) return
+                        const activate = event.button === 0 && selected()
+                        focusPane("projects")
+                        setSelectedProjectId(project.id)
+                        loadTreesFor(project.id)
+                        if (event.button === 2) openMenu("projects", event.x, event.y)
+                        if (activate) focusPane("trees")
+                      }}
+                    ><text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${project.name}`}</text></box>
+                  }}</For>
+                </box>
               </box>
             </Show>
           </box>
@@ -1127,28 +1089,11 @@ export function App() {
                 node.onSizeChange = () => setTreeListHeight(node.height)
                 setTreeListHeight(node.height)
               }}>
-                <select
+                <box
                   ref={(node) => { treeList = node }}
                   flexGrow={1}
-                  focused={pane() === "trees" && focusRow() === "panes" && !modal() && !menu()}
-                  options={treeOptions()}
-                  selectedIndex={treeIndex()}
-                  showDescription
-                  backgroundColor={theme.panel}
-                  focusedBackgroundColor={theme.panel}
-                  selectedBackgroundColor={theme.selectedBg}
-                  selectedTextColor={theme.selectedFg}
-                  textColor={theme.text}
-                  descriptionColor={theme.muted}
-                  onMouseDown={(event) => {
-                    focusPane("trees")
-                    clickSelect(event, treeIndex(), trees().length, (index) => {
-                      const tree = trees()[index]
-                      if (!tree) return
-                      pickTree(tree.path)
-                      if (event.button === 2) openMenu("trees", event.x, event.y)
-                    })
-                  }}
+                  flexDirection="column"
+                  overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("trees")
                     wheelSelect(event, treeIndex(), trees().length, (index) => {
@@ -1156,10 +1101,33 @@ export function App() {
                       if (tree) pickTree(tree.path)
                     })
                   }}
-                  onChange={(_index, option) => {
-                    if (option?.value) pickTree(String(option.value))
-                  }}
-                />
+                >
+                  <For each={visibleRows(trees(), treeIndex(), treeListHeight(), 2)}>{({ row: tree, index }) => {
+                    const selected = () => index === treeIndex()
+                    const name = () => {
+                      const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")
+                      const status = statusParts.join(" ")
+                      return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
+                    }
+                    return <box height={2} flexShrink={0} flexDirection="column" overflow="hidden"
+                      backgroundColor={selected()
+                        ? hoveredTreeIndex() === index ? theme.selectedHoverBg : theme.selectedBg
+                        : hoveredTreeIndex() === index ? theme.hoverBg : theme.panel}
+                      onMouseOver={() => { setHoveredTreeIndex(index); renderer.setMousePointer("pointer") }}
+                      onMouseOut={() => { setHoveredTreeIndex(null); renderer.setMousePointer("default") }}
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                        if (modal() || menu() || (event.button !== 0 && event.button !== 2)) return
+                        focusPane("trees")
+                        pickTree(tree.path)
+                        if (event.button === 2) openMenu("trees", event.x, event.y)
+                      }}
+                    >
+                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.muted} selectable={false}>{`   ${tree.branch ?? "detached"}  ${displayPath(tree.path)}`}</text>
+                    </box>
+                  }}</For>
+                </box>
               </box>
             </Show>
           </box>
