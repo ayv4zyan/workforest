@@ -1,9 +1,12 @@
 import {
   existsSync,
+  closeSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
@@ -141,12 +144,14 @@ export function collectServers(opts: {
   )
   const trees = allTrees.map((entry) => entry.tree)
 
-  const owned = loadRunRecords(home).filter((record) => {
-    if (isPidAlive(record.pid)) return true
-    deleteRunRecord(home, record.projectId, record.worktreePath)
-    return false
+  const owned = loadRunRecords(home).map((record) => {
+    if (!record.exited && !isPidAlive(record.pid)) {
+      record.exited = true
+      saveRunRecord(home, record)
+    }
+    return record
   })
-  const ownedPids = new Set(owned.map((record) => record.pid))
+  const ownedPids = new Set(owned.filter((record) => !record.exited).map((record) => record.pid))
 
   const listeners = listListeners()
   const cwds = listCwds(listeners.map((listener) => listener.pid))
@@ -161,6 +166,10 @@ export function collectServers(opts: {
       projectId: record.projectId,
       owned: true,
       logPath: record.logPath,
+      state: record.exited ? "failed" : listeners.some((listener) =>
+        listener.port === record.port && (listener.pid === record.pid ||
+          worktreeForCwd(cwds.get(listener.pid) ?? "/", trees)?.path === record.worktreePath),
+      ) ? "running" : "starting",
     })
   }
 
@@ -172,6 +181,8 @@ export function collectServers(opts: {
     if (!tree) continue
     const projectId = allTrees.find((entry) => entry.tree.path === tree.path)?.projectId
     if (!projectId) continue
+    if (rows.some((row) => row.worktreePath === tree.path && row.port === listener.port &&
+      row.state !== "failed" && (row.owned || row.pid === listener.pid))) continue
     rows.push({
       pid: listener.pid,
       port: listener.port,
@@ -179,6 +190,7 @@ export function collectServers(opts: {
       worktreePath: tree.path,
       projectId,
       owned: false,
+      state: "running",
     })
   }
 
@@ -191,10 +203,11 @@ export function startServer(opts: {
   project: Project
   worktree: GitWorktree
   usedPorts: Iterable<number>
+  port?: number
 }): RunRecord {
   const { home, project, worktree, usedPorts } = opts
   const existing = loadRunRecords(home).find(
-    (record) => record.worktreePath === worktree.path && isPidAlive(record.pid),
+    (record) => record.worktreePath === worktree.path && !record.exited && isPidAlive(record.pid),
   )
   if (existing) return existing
 
@@ -203,22 +216,31 @@ export function startServer(opts: {
 
   const preferred = loadPorts(home)[worktree.path]
   const taken = new Set([...usedPorts, ...listListeners().map((listener) => listener.port)])
-  const port = pickPort(taken, preferred, project.basePort)
+  const port = opts.port ?? pickPort(taken, preferred, project.basePort)
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("Enter a whole port number from 1024 to 65535")
+  }
+  if (taken.has(port)) throw new Error(`Port ${port} is already in use. Choose another port.`)
   const command = spawnCommand(target, port)
   const logPath = join(logsDir(home), project.id, `${basename(worktree.path)}.log`)
   mkdirSync(dirname(logPath), { recursive: true })
   const logFd = openSync(logPath, "a")
-  const proc = Bun.spawn(command, {
-    cwd: target.cwd,
-    env: {
-      ...process.env,
-      PORT: String(port),
-      VITE_PORT: String(port),
-    },
-    stdin: "ignore",
-    stdout: logFd,
-    stderr: logFd,
-  })
+  let proc: ReturnType<typeof Bun.spawn>
+  try {
+    proc = Bun.spawn(command, {
+      cwd: target.cwd,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        VITE_PORT: String(port),
+      },
+      stdin: "ignore",
+      stdout: logFd,
+      stderr: logFd,
+    })
+  } finally {
+    closeSync(logFd)
+  }
   const record: RunRecord = {
     pid: proc.pid,
     port,
@@ -235,12 +257,35 @@ export function startServer(opts: {
 }
 
 export function stopServer(home: string, row: ServerRow): void {
+  if (row.state === "failed") return
   killProcessTree(row.pid)
   if (row.owned) deleteRunRecord(home, row.projectId, row.worktreePath)
 }
 
+export function readServerLog(path: string): string {
+  const fd = openSync(path, "r")
+  try {
+    const size = fstatSync(fd).size
+    const buffer = Buffer.alloc(Math.min(size, 16000))
+    const read = readSync(fd, buffer, 0, buffer.length, Math.max(0, size - buffer.length))
+    return buffer.subarray(0, read).toString("utf8").replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+  } finally {
+    closeSync(fd)
+  }
+}
+
 export function serversForWorktree(rows: ServerRow[], worktreePath: string): ServerRow[] {
   return rows.filter((row) => row.worktreePath === worktreePath)
+}
+
+export function serverStatus(rows: ServerRow[]): string {
+  const active = rows.filter((row) => row.state !== "failed")
+  if (!active.length) return rows.some((row) => row.state === "failed") ? "! Failed · view logs" : "○ Stopped"
+  const ports = [...new Set(active.map((row) => row.port))].map((port) => `:${port}`).join(", ")
+  const label = active.every((row) => row.state === "starting") ? "◌ Starting" : "● Running"
+  const count = active.length > 1 ? ` · ${active.length} servers` : ""
+  const external = active.some((row) => !row.owned) ? " · external" : ""
+  return `${label} · ${ports}${count}${external}`
 }
 
 export function forgetWorktreeRuntime(home: string, projectId: string, worktreePath: string): void {

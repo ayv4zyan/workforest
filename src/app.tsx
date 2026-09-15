@@ -16,9 +16,11 @@ import {
   worktreeDisplayName,
 } from "./lib/git.ts"
 import { workforestHome } from "./lib/home.ts"
-import { movePort } from "./lib/ports.ts"
+import { loadPorts, pickPort, movePort } from "./lib/ports.ts"
 import {
   collectServers,
+  serverStatus,
+  readServerLog,
   forgetWorktreeRuntime,
   moveRunRecord,
   serversForWorktree,
@@ -27,7 +29,7 @@ import {
 } from "./lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 
-type Pane = "projects" | "trees" | "servers"
+type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "footer"
 type ModalFocus = "input" | "submit" | "cancel" | "manual" | "auto"
 type FooterAction = {
@@ -38,7 +40,7 @@ type FooterAction = {
   onPress: () => void
 }
 
-const panes: Pane[] = ["projects", "trees", "servers"]
+const panes: Pane[] = ["projects", "trees"]
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
   | { kind: "rename-choice" }
@@ -47,7 +49,9 @@ type Modal =
   | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
-  | { kind: "kill" }
+  | { kind: "stop"; rows: ServerRow[] }
+  | { kind: "start"; value: string; error?: string; project: Project; tree: GitWorktree }
+  | { kind: "logs"; text: string }
 
 const dataDir = () => workforestHome()
 
@@ -63,7 +67,6 @@ export function App() {
   const [trees, setTrees] = createSignal<TreeRow[]>([])
   const [selectedTreePath, setSelectedTreePath] = createSignal<string | null>(null)
   const [servers, setServers] = createSignal<ServerRow[]>([])
-  const [selectedServerPid, setSelectedServerPid] = createSignal<number | null>(null)
   const [status, setStatus] = createSignal("")
   const [busy, setBusy] = createSignal(false)
   let renameRequest: AbortController | undefined
@@ -76,7 +79,7 @@ export function App() {
     const tree = selectedTree()
     return tree ? serversForWorktree(servers(), tree.path) : []
   }
-  const selectedServer = () => treeServers().find((row) => row.pid === selectedServerPid()) ?? null
+  const activeServers = () => treeServers().filter((row) => row.state !== "failed")
 
   const projectOptions = (): SelectOption[] =>
     projects().map((project) => ({
@@ -87,24 +90,10 @@ export function App() {
 
   const treeOptions = (): SelectOption[] =>
     trees().map((tree) => ({
-      name: `${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}`,
+      name: `${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}  ${serverStatus(serversForWorktree(servers(), tree.path))}`,
       description: `${tree.branch ?? "detached"}  ${tree.path}`,
       value: tree.path,
     }))
-
-  const serverOptions = (): SelectOption[] =>
-    treeServers().map((row) => ({
-      name: `:${row.port}  ${row.owned ? "owned" : "discovered"}`,
-      description: `pid ${row.pid}  ${row.command}`,
-      value: String(row.pid),
-    }))
-
-  function syncSelectedServer(treePath: string | null, rows: ServerRow[] = servers()) {
-    const visible = treePath ? serversForWorktree(rows, treePath) : []
-    if (!visible.some((row) => row.pid === selectedServerPid())) {
-      setSelectedServerPid(visible[0]?.pid ?? null)
-    }
-  }
 
   function refresh() {
     const config = loadConfig(dataDir())
@@ -144,7 +133,6 @@ export function App() {
 
     const rows = collectServers({ home: dataDir(), projects: config.projects, treesByProject })
     setServers(rows)
-    syncSelectedServer(currentPath, rows)
   }
 
   function loadTreesFor(projectId: string) {
@@ -152,7 +140,6 @@ export function App() {
     if (!project) {
       setTrees([])
       setSelectedTreePath(null)
-      syncSelectedServer(null)
       return
     }
     const listed = listWorktrees(project.path).map((tree) => ({
@@ -165,12 +152,10 @@ export function App() {
       ? selectedTreePath()
       : (listed[0]?.path ?? null)
     setSelectedTreePath(path)
-    syncSelectedServer(path)
   }
 
   function pickTree(path: string) {
     setSelectedTreePath(path)
-    syncSelectedServer(path)
   }
 
   function runOp(label: string, fn: () => string | void) {
@@ -258,16 +243,15 @@ export function App() {
         { id: "btn-delete", label: "delete", variant: "danger", disabled: !linked, onPress: openDelete },
         {
           id: "btn-start",
-          label: treeServers().length > 0 ? "stop" : "start",
+          label: activeServers().length > 0 ? "stop" : "start",
           variant: "accent",
           disabled: !tree,
           onPress: toggleServer,
         },
+        { id: "btn-logs", label: "logs", disabled: !treeServers().some((row) => row.logPath), onPress: openLogs },
       ]
     }
-    return [
-      { id: "btn-kill", label: "kill", variant: "danger", disabled: !selectedServer(), onPress: openKill },
-    ]
+    return []
   }
 
   function cycleFooter(delta: number) {
@@ -422,14 +406,15 @@ export function App() {
     showModal({ kind: "delete" })
   }
 
-  function openKill() {
-    if (busy()) return
-    const row = selectedServer()
-    if (!row) {
-      setStatus("no server selected")
-      return
+  function openLogs() {
+    const path = treeServers().find((row) => row.logPath)?.logPath
+    if (!path) return
+    try {
+      const text = readServerLog(path)
+      showModal({ kind: "logs", text: text || "No output yet." })
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error))
     }
-    showModal({ kind: "kill" })
   }
 
   function cancelModal() {
@@ -439,6 +424,10 @@ export function App() {
   function acceptModal() {
     const current = modal()
     if (!current) return
+    if (current.kind === "logs") {
+      cancelModal()
+      return
+    }
     if (current.kind === "rename-choice") {
       if (modalFocus() === "auto") void autoRename()
       else openManualRename()
@@ -484,6 +473,13 @@ export function App() {
       return
     }
     if (modal()) {
+      if (modal()?.kind === "logs") {
+        if (["escape", "enter", "return"].includes(key.name)) {
+          key.preventDefault()
+          cancelModal()
+        }
+        return
+      }
       if (key.name === "escape") {
         cancelModal()
         return
@@ -578,10 +574,6 @@ export function App() {
       openDelete()
       return
     }
-    if (key.name === "k") {
-      if (focusRow() === "panes" && pane() !== "servers") return
-      openKill()
-    }
   })
 
   function submitModal(raw: string) {
@@ -589,6 +581,20 @@ export function App() {
     if (!current) return
     const value = raw.trim()
     try {
+      if (current.kind === "start") {
+        if (!/^\d+$/.test(value)) throw new Error("Enter a whole port number from 1024 to 65535")
+        const record = startServer({
+          home: dataDir(),
+          project: current.project,
+          worktree: current.tree,
+          port: Number(value),
+          usedPorts: servers().filter((row) => row.state !== "failed").map((row) => row.port),
+        })
+        setModal(null)
+        refresh()
+        setStatus(`starting :${record.port}`)
+        return
+      }
       if (current.kind === "add-project") {
         if (!value) throw new Error("path required")
         const project = addProject(dataDir(), value)
@@ -659,7 +665,7 @@ export function App() {
       const tree = selectedTree()
       if (!project || !tree) return
       runOp("deleting", () => {
-        for (const row of serversForWorktree(servers(), tree.path)) stopServer(dataDir(), row)
+        for (const row of serversForWorktree(servers(), tree.path).filter((row) => row.state !== "failed")) stopServer(dataDir(), row)
         removeWorktree({ repoPath: project.path, tree, force: tree.dirty })
         forgetWorktreeRuntime(dataDir(), project.id, tree.path)
         return `deleted ${tree.displayName}`
@@ -667,47 +673,40 @@ export function App() {
       setModal(null)
       return
     }
-    if (current.kind === "kill") {
-      const row = selectedServer()
-      if (!row) return
-      runOp("killing", () => {
-        stopServer(dataDir(), row)
-        return `killed pid ${row.pid} on :${row.port}`
-      })
+    if (current.kind === "stop") {
+      stopRows(current.rows)
       setModal(null)
-      return
     }
   }
 
+  function stopRows(rows: ServerRow[]) {
+    runOp("stopping", () => {
+      for (const row of rows) stopServer(dataDir(), row)
+      return `stopped ${rows.length} server(s)`
+    })
+  }
+
   function toggleServer() {
+    if (busy() || modal()) return
     const project = selectedProject()
     const tree = selectedTree()
     if (!project || !tree) {
       setStatus("pick a worktree")
       return
     }
-    const running = treeServers()
+    const running = activeServers()
     if (running.length > 0) {
-      runOp("stopping", () => {
-        for (const row of running) stopServer(dataDir(), row)
-        return `stopped ${running.length} server(s)`
-      })
+      if (running.some((row) => !row.owned)) showModal({ kind: "stop", rows: running })
+      else stopRows(running)
       return
     }
-    runOp("starting", () => {
-      const record = startServer({
-        home: dataDir(),
-        project,
-        worktree: tree,
-        usedPorts: servers().map((row) => row.port),
-      })
-      return `started :${record.port} (pid ${record.pid})`
-    })
+    const preferred = loadPorts(dataDir())[tree.path]
+    const port = preferred ?? pickPort(servers().filter((row) => row.state !== "failed").map((row) => row.port), undefined, project.basePort)
+    showModal({ kind: "start", value: String(port), project, tree })
   }
 
   const projectIndex = () => Math.max(0, projects().findIndex((project) => project.id === selectedProjectId()))
   const treeIndex = () => Math.max(0, trees().findIndex((tree) => tree.path === selectedTreePath()))
-  const serverIndex = () => Math.max(0, treeServers().findIndex((row) => row.pid === selectedServerPid()))
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
@@ -722,8 +721,12 @@ export function App() {
         return "delete worktree"
       case "unregister":
         return "unregister project"
-      case "kill":
-        return "kill server"
+      case "stop":
+        return "stop servers"
+      case "start":
+        return "start server"
+      case "logs":
+        return "server logs"
     }
   }
 
@@ -740,16 +743,18 @@ export function App() {
       case "delete": {
         const tree = selectedTree()
         const extra = tree?.dirty ? " Working tree is dirty; this force-deletes." : ""
-        const running = tree ? serversForWorktree(servers(), tree.path) : []
+        const running = tree ? serversForWorktree(servers(), tree.path).filter((row) => row.state !== "failed") : []
         const ports = running.length ? ` Also kills ${running.map((row) => `:${row.port}`).join(", ")}.` : ""
         return `Delete ${tree?.displayName ?? "this worktree"}?${extra}${ports}`
       }
       case "unregister":
         return `Remove ${selectedProject()?.name ?? "this project"} from the list? Worktrees stay on disk.`
-      case "kill": {
-        const row = selectedServer()
-        return row ? `Kill pid ${row.pid} on :${row.port}?` : "Nothing to kill"
-      }
+      case "start":
+        return "Port (1024–65535). Uses the worktree’s detected dev script."
+      case "logs":
+        return "Recent output"
+      case "stop":
+        return `Stop ${current.rows.map((row) => `:${row.port} (pid ${row.pid}, ${row.owned ? "Workforest" : "external"})`).join(", ")}? External processes were started outside Workforest.`
     }
   }
 
@@ -920,61 +925,6 @@ export function App() {
             </Show>
           </box>
 
-          <box
-            id="pane-servers"
-            width={36}
-            border
-            borderColor={pane() === "servers" && focusRow() === "panes" ? theme.borderFocus : theme.border}
-            title={`servers (${treeServers().length})`}
-            titleColor={pane() === "servers" && focusRow() === "panes" ? theme.accent : theme.muted}
-            backgroundColor={theme.panel}
-            onMouseDown={() => {
-              if (!modal()) focusPane("servers")
-            }}
-          >
-            <Show
-              when={treeServers().length > 0}
-              fallback={
-                <text fg={theme.muted} selectable={false}>
-                  {selectedTree() ? "no listeners on this worktree" : "pick a worktree"}
-                </text>
-              }
-            >
-              <select
-                flexGrow={1}
-                focused={pane() === "servers" && focusRow() === "panes" && !modal()}
-                options={serverOptions()}
-                selectedIndex={serverIndex()}
-                showDescription
-                backgroundColor={theme.panel}
-                focusedBackgroundColor={theme.panel}
-                selectedBackgroundColor={theme.selectedBg}
-                selectedTextColor={theme.selectedFg}
-                textColor={theme.text}
-                descriptionColor={theme.muted}
-                onMouseDown={(event) => {
-                  focusPane("servers")
-                  clickSelect(event, serverIndex(), treeServers().length, (index, activate) => {
-                    const row = treeServers()[index]
-                    if (!row) return
-                    setSelectedServerPid(row.pid)
-                    if (activate) openKill()
-                  })
-                }}
-                onMouseScroll={(event) => {
-                  focusPane("servers")
-                  wheelSelect(event, serverIndex(), treeServers().length, (index) => {
-                    const row = treeServers()[index]
-                    if (row) setSelectedServerPid(row.pid)
-                  })
-                }}
-                onChange={(_index, option) => {
-                  if (option?.value) setSelectedServerPid(Number(option.value))
-                }}
-                onSelect={() => openKill()}
-              />
-            </Show>
-          </box>
       </box>
 
       <box height={status() ? 6 : 5} zIndex={2} flexDirection="column">
@@ -1028,7 +978,7 @@ export function App() {
             left={8}
             right={8}
             top={6}
-            height={current().kind === "rename-choice" ? 8 : 12}
+            height={current().kind === "logs" ? "70%" : current().kind === "rename-choice" ? 8 : 12}
             zIndex={20}
             border
             borderColor={theme.accent}
@@ -1041,7 +991,14 @@ export function App() {
             onMouseDown={(event) => event.stopPropagation()}
           >
             <text fg={theme.text} selectable={false}>{modalBody(current())}</text>
-            {current().kind === "rename-choice" ? (
+            {current().kind === "logs" ? (
+              <>
+                <scrollbox flexGrow={1} focused={true}>
+                  <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
+                </scrollbox>
+                <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+              </>
+            ) : current().kind === "rename-choice" ? (
               <box flexDirection="row" gap={1}>
                 <ActionButton id="btn-manual-rename" label="manual" active={modalFocus() === "manual"} onPress={openManualRename} />
                 <ActionButton id="btn-auto-rename" label="auto" active={modalFocus() === "auto"} disabled={!selectedTree()?.branch} onPress={() => void autoRename()} />

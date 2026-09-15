@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
-import { parseLsofCwd, parseLsofListen, worktreeForCwd } from "./servers.ts"
+import { parseLsofCwd, parseLsofListen, worktreeForCwd, serverStatus, startServer, loadRunRecords } from "./servers.ts"
 import { pickPort } from "./ports.ts"
 import { extraArgsForScript, resolveDevTarget, spawnCommand } from "./dev.ts"
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { GitWorktree } from "./types.ts"
@@ -87,4 +87,30 @@ test("resolveDevTarget prefers root web:dev then nested vite", () => {
     "5180",
     "--strictPort",
   ])
+})
+
+test("server status distinguishes startup, failure, external and multiple servers", () => {
+  const row = { pid: 123, port: 5173, command: "bun", worktreePath: "/tmp/tree", projectId: "p", owned: true }
+  expect(serverStatus([])).toBe("○ Stopped")
+  expect(serverStatus([{ ...row, state: "starting" }])).toContain("Starting · :5173")
+  expect(serverStatus([{ ...row, state: "failed" }])).toContain("Failed · view logs")
+  expect(serverStatus([row, { ...row, pid: 456, port: 5174, owned: false }])).toBe("● Running · :5173, :5174 · 2 servers · external")
+})
+
+test("explicit ports are validated and occupied ports are rejected", () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-port-"))
+  const listener = Bun.serve({ port: 0, fetch: () => new Response("ok") })
+  const tree: GitWorktree = { path: root, head: "a", branch: "main", bare: false, detached: false, locked: false, prunable: false, isMain: true }
+  writeFileSync(join(root, "package.json"), JSON.stringify({ scripts: { dev: "bun server.ts" } }))
+  const opts = { home: join(root, "home"), project: { id: "p", name: "p", path: root, basePort: 5173 }, worktree: tree, usedPorts: [] }
+  try {
+    for (const port of [0, 1023, 65536, 5173.5, NaN]) {
+      expect(() => startServer({ ...opts, port })).toThrow("whole port number")
+    }
+    expect(() => startServer({ ...opts, port: listener.port! })).toThrow("already in use")
+    expect(loadRunRecords(opts.home)).toEqual([])
+  } finally {
+    listener.stop(true)
+    rmSync(root, { recursive: true, force: true })
+  }
 })

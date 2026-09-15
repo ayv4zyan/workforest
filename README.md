@@ -16,15 +16,15 @@ bun start
 Every action has a click target. Keyboard shortcuts still work.
 
 - Click **refresh** / **quit** in the header.
-- Click a list row to select it. Click the same row again to activate it (open trees, start/stop, or kill).
+- Click a list row to select it. Click the same row again to activate it (open trees or start/stop).
 - Scroll the wheel over a list to move the selection.
-- The three panes are **projects**, **worktrees**, and **servers**. Servers always belong to the selected worktree.
-- The bottom bar follows the focused pane: projects gets **add**, **unregister**; worktrees gets **new**, **rename**, **delete**, **start**/**stop**; servers gets **kill**.
+- The two panes are **projects** and **worktrees**. Each worktree shows its server status and port inline.
+- The bottom bar follows the focused pane: projects gets **add**, **unregister**; worktrees gets **new**, **rename**, **delete**, **start**/**stop**, and **logs**.
 - Dialogs have **submit**/**confirm** and **cancel**. Click the input to type.
 
 ## Keys
 
-Arrow keys move spatially. The shell is three rows: header (`refresh` / `quit`), the project / worktree / server panes, then footer actions. Dialogs use the same idea: the text field, then `submit` / `confirm` and `cancel`.
+Arrow keys move spatially. The shell is three rows: header (`refresh` / `quit`), the project / worktree panes, then footer actions. Dialogs use the same idea: the text field, then `submit` / `confirm` and `cancel`.
 
 | Key | Action |
 | --- | --- |
@@ -41,13 +41,14 @@ Arrow keys move spatially. The shell is three rows: header (`refresh` / `quit`),
 | `enter` | Activate the focused list item, header / footer / dialog button, or submit the dialog field |
 | `esc` | Close the open dialog |
 | `j` / `k` | Move down / up in the focused list |
-| `k` | Kill the selected server (servers pane) |
 | `g` | Refresh |
 | `q` | Quit |
 
 On create, Workforest copies `.env*` files and symlinks `node_modules` from the main checkout when lockfiles match. If they do not match, it runs `bun install` in the new tree.
 
-Dev servers get a free port from 5173 up. The servers pane lists processes Workforest started and any other listener whose cwd is the selected worktree.
+**Start** asks for a port, prefilled with the worktree’s last-used port (or an available suggestion from 5173 up). Invalid or occupied ports keep the dialog open so you can correct them. Workforest detects the dev script from `package.json`, passes port arguments for Vite/Next, and sets `PORT` and `VITE_PORT`.
+
+Worktree rows show **Stopped**, **Starting**, **Running** with ports, or **Failed**. **Logs** opens recent output from a Workforest server, including failed starts; scroll to browse and press Escape or click **close** to return. Discovery also shows external listeners and indicates when multiple servers exist. **Stop** stops the selected worktree’s servers; external processes are identified in a confirmation dialog.
 
 ## Auto-rename
 

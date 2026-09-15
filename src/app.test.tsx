@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { realpathSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
 import type { Renderable } from "@opentui/core"
 import { addProject } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
+import { collectServers, stopServer, loadRunRecords } from "./lib/servers.ts"
+import { rememberPort } from "./lib/ports.ts"
 import { App } from "./app.tsx"
 import { ActionButton } from "./ui/button.tsx"
 
@@ -97,7 +99,7 @@ test("renders the workforest shell with clickable controls", async () => {
     expect(frame).toContain("Workforest")
     expect(frame).toContain("projects (0)")
     expect(frame).toContain("worktrees (0)")
-    expect(frame).toContain("servers (0)")
+    expect(frame).not.toContain("servers (0)")
     expect(frame).toContain("add")
     expect(frame).toContain("actions")
     expect(frame).toContain("refresh")
@@ -128,8 +130,8 @@ test("arrow keys cycle focused panes", async () => {
     setup.mockInput.pressArrow("right")
     await paint(setup)
     frame = setup.captureCharFrame()
-    expect(frame).toContain("kill")
-    expect(frame).not.toContain("add")
+    expect(frame).not.toContain("kill")
+    expect(frame).toContain("add")
 
     setup.mockInput.pressArrow("left")
     await paint(setup)
@@ -173,15 +175,15 @@ test("footer actions follow the focused pane", async () => {
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
     await setup.renderOnce()
-    const servers = findById(setup.renderer.root, "pane-servers")
-    if (!servers) throw new Error("missing pane-servers")
+    const servers = findById(setup.renderer.root, "pane-trees")
+    if (!servers) throw new Error("missing pane-trees")
     await setup.mockMouse.click(servers.x + 1, servers.y)
     await paint(setup)
     const frame = setup.captureCharFrame()
     expect(frame).toContain("projects")
     expect(frame).toContain("worktrees")
-    expect(frame).toContain("servers")
-    expect(frame).toContain("kill")
+    expect(frame).not.toContain("servers")
+    expect(frame).toContain("start")
     expect(frame).toContain("refresh")
     expect(frame).not.toContain("add")
   } finally {
@@ -347,3 +349,102 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("worktree start asks for a remembered port, shows running status and logs, and stops", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-server-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { dev: "bun server.ts" } }))
+  writeFileSync(join(repo, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") }); console.log("server ready")')
+  const project = addProject(home, repo)
+  let external: ReturnType<typeof Bun.spawn> | undefined
+  const occupied = Bun.serve({ port: 0, fetch: () => new Response("occupied") })
+  const port = occupied.port!
+  rememberPort(home, repo, port)
+  const setup = await testRender(() => <App />, { width: 160, height: 36 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node!.x + 2, node!.y + 1)
+    await paint(setup)
+  }
+  try {
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("Stopped")
+    expect(findById(setup.renderer.root, "pane-servers")).toBeUndefined()
+    setup.mockInput.pressArrow("right")
+    await paint(setup)
+    await click("btn-start")
+    expect(setup.captureCharFrame()).toContain("start server")
+    expect(setup.captureCharFrame()).toContain(String(port))
+    await click("btn-submit")
+    expect(setup.captureCharFrame()).toContain("already in use")
+    expect(findById(setup.renderer.root, "modal-input")).toBeTruthy()
+    occupied.stop(true)
+    await click("btn-submit")
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+    for (let i = 0; i < 30; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("Running")) break
+    }
+    expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
+    expect(setup.captureCharFrame()).not.toContain("2 servers")
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    await click("btn-logs")
+    expect(setup.captureCharFrame()).toContain("server ready")
+    await click("btn-close-logs")
+    await click("btn-start")
+    for (let i = 0; i < 20; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("Stopped")) break
+    }
+    expect(setup.captureCharFrame()).toContain("Stopped")
+    expect(loadRunRecords(home)).toEqual([])
+    writeFileSync(join(repo, "server.ts"), 'console.error("startup failed example"); process.exit(1)')
+    await click("btn-start")
+    await click("btn-submit")
+    await Bun.sleep(150)
+    await click("btn-refresh")
+    expect(setup.captureCharFrame()).toContain("Failed · view logs")
+    await click("btn-logs")
+    expect(setup.captureCharFrame()).toContain("startup failed example")
+    await click("btn-close-logs")
+    writeFileSync(join(repo, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("external") })')
+    external = Bun.spawn([process.execPath, "server.ts"], {
+      cwd: repo, env: { ...process.env, PORT: String(port) }, stdout: "ignore", stderr: "ignore",
+    })
+    for (let i = 0; i < 20; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("external")) break
+    }
+    expect(setup.captureCharFrame()).toContain(`Running · :${port} · external`)
+    await click("btn-start")
+    expect(setup.captureCharFrame()).toContain("External processes were started outside Workforest")
+    await click("btn-cancel")
+    expect(external.exitCode).toBeNull()
+    await click("btn-start")
+    await click("btn-submit")
+    await external.exited
+
+  } finally {
+    setup.renderer.destroy()
+    occupied.stop(true)
+    external?.kill()
+    for (const row of collectServers({ home, projects: [project], treesByProject: new Map([[project.id, listWorktrees(repo)]]) })) {
+      stopServer(home, row)
+    }
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 15000)
