@@ -5,6 +5,8 @@ Terminal UI for git worktrees **and** the Bun/JS dev servers attached to them.
 Registered projects stay where they are. Linked worktrees live under
 `~/.workforest/trees/<project>/<name>/`.
 
+![Create a worktree — type a name, submit, see it linked](docs/images/create-and-start.gif)
+
 ![Main UI — projects and worktrees with server status](docs/images/main-ui.png)
 
 ![Start server — port dialog](docs/images/start-port.png)
