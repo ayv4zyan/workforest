@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
@@ -48,6 +48,8 @@ const defaultProjectPaneWidth = 28
 const minProjectPaneWidth = 16
 const minTreePaneWidth = 24
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
+type TreeGroup = "running" | "stopped"
+type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 type Modal =
   | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
@@ -88,6 +90,8 @@ export function App() {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [trees, setTrees] = createSignal<TreeRow[]>([])
   const [selectedTreePath, setSelectedTreePath] = createSignal<string | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = createSignal<Record<TreeGroup, boolean>>({ running: false, stopped: false })
+  const [focusedGroup, setFocusedGroup] = createSignal<TreeGroup | null>(null)
   const [servers, setServers] = createSignal<ServerRow[]>([])
   const [status, setStatus] = createSignal("")
   const [busy, setBusy] = createSignal(false)
@@ -121,12 +125,54 @@ export function App() {
   }
 
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
-  const selectedTree = () => trees().find((tree) => tree.path === selectedTreePath()) ?? null
+  const selectedTree = () => focusedGroup() ? null : trees().find((tree) => tree.path === selectedTreePath()) ?? null
   const treeServers = () => {
     const tree = selectedTree()
     return tree ? serversForWorktree(servers(), tree.path) : []
   }
   const activeServers = () => treeServers().filter((row) => row.state !== "failed")
+  const groupedTrees = createMemo(() => {
+    const sorted = [...trees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
+    const running: TreeRow[] = []
+    const stopped: TreeRow[] = []
+    for (const tree of sorted) {
+      const active = serversForWorktree(servers(), tree.path).some((row) => row.state !== "failed")
+      if (active) running.push(tree)
+      else stopped.push(tree)
+    }
+    return { running, stopped }
+  })
+  const treeEntries = createMemo<TreeEntry[]>(() => {
+    const entries: TreeEntry[] = []
+    for (const group of ["running", "stopped"] as const) {
+      entries.push({ kind: "group", group, count: groupedTrees()[group].length })
+      if (!collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
+    }
+    return entries
+  })
+
+  // Keep an active selection visible when its server state changes sections.
+  createEffect(() => {
+    if (focusedGroup()) return
+    for (const group of ["running", "stopped"] as const) {
+      if (collapsedGroups()[group] && groupedTrees()[group].some((tree) => tree.path === selectedTreePath())) {
+        setCollapsedGroups((current) => ({ ...current, [group]: false }))
+      }
+    }
+  })
+
+  function toggleGroup(group: TreeGroup) {
+    setFocusedGroup(group)
+    setCollapsedGroups((current) => ({ ...current, [group]: !current[group] }))
+  }
+
+  function pickEntry(index: number) {
+    const entry = treeEntries()[index]
+    if (!entry) return
+    if (entry.kind === "group") setFocusedGroup(entry.group)
+    else pickTree(entry.tree.path)
+  }
+
 
   const visibleRows = <T,>(rows: T[], selected: number, height: number, linesPerItem: number) => {
     const count = Math.max(1, Math.floor(height / linesPerItem))
@@ -190,10 +236,13 @@ export function App() {
     const path = listed.some((tree) => tree.path === selectedTreePath())
       ? selectedTreePath()
       : (listed[0]?.path ?? null)
+    setFocusedGroup(null)
+    setCollapsedGroups({ running: false, stopped: false })
     setSelectedTreePath(path)
   }
 
   function pickTree(path: string) {
+    setFocusedGroup(null)
     setSelectedTreePath(path)
   }
 
@@ -258,9 +307,8 @@ export function App() {
       loadTreesFor(project.id)
       return
     }
-    const next = Math.max(0, Math.min(treeIndex() + delta, trees().length - 1))
-    const tree = trees()[next]
-    if (tree) pickTree(tree.path)
+    const next = Math.max(0, Math.min(treeIndex() + delta, treeEntries().length - 1))
+    pickEntry(next)
   }
 
   function headerActions(): Action[] {
@@ -324,7 +372,7 @@ export function App() {
     const list = target === "projects" ? projectList : treeList
     const row = target === "projects"
       ? selectedRowTop(projectIndex(), projects().length, projectListHeight(), 1)
-      : selectedRowTop(treeIndex(), trees().length, treeListHeight() - 1, 1)
+      : selectedRowTop(treeIndex(), treeEntries().length, treeListHeight() - 1, 1)
     setMenuIndex(0)
     setSubmenuIndex(0)
     setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
@@ -674,6 +722,11 @@ export function App() {
       }
       return
     }
+    if (["space", "return", "enter"].includes(key.name) && pane() === "trees" && focusRow() === "panes" && focusedGroup()) {
+      key.preventDefault()
+      toggleGroup(focusedGroup()!)
+      return
+    }
     if (key.name === "return" || key.name === "enter") {
       if (focusRow() === "pane-actions") {
         key.preventDefault()
@@ -868,7 +921,7 @@ export function App() {
   }
 
   const projectIndex = () => Math.max(0, projects().findIndex((project) => project.id === selectedProjectId()))
-  const treeIndex = () => Math.max(0, trees().findIndex((tree) => tree.path === selectedTreePath()))
+  const treeIndex = () => Math.max(0, treeEntries().findIndex((entry) => entry.kind === "group" ? entry.group === focusedGroup() : !focusedGroup() && entry.tree.path === selectedTreePath()))
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
@@ -1156,13 +1209,23 @@ export function App() {
                   overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("trees")
-                    wheelSelect(event, treeIndex(), trees().length, (index) => {
-                      const tree = trees()[index]
-                      if (tree) pickTree(tree.path)
-                    })
+                    wheelSelect(event, treeIndex(), treeEntries().length, pickEntry)
                   }}
                 >
-                  <For each={visibleRows(trees(), treeIndex(), treeListHeight() - 1, 1)}>{({ row: tree, index }) => {
+                  <For each={visibleRows(treeEntries(), treeIndex(), treeListHeight() - 1, 1)}>{({ row: entry, index }) => {
+                    if (entry.kind === "group") return <box
+                      id={`tree-group-${entry.group}`} height={1} flexShrink={0}
+                      backgroundColor={focusedGroup() === entry.group ? theme.selectedBg : theme.panel}
+                      onMouseOver={() => renderer.setMousePointer("pointer")}
+                      onMouseOut={() => renderer.setMousePointer("default")}
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                        if (modal() || menu() || event.button !== 0) return
+                        focusPane("trees")
+                        toggleGroup(entry.group)
+                      }}
+                    ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${collapsedGroups()[entry.group] ? "▸" : "▾"} ${entry.group === "running" ? "Running" : "Not running"} (${entry.count})`}</text></box>
+                    const tree = entry.tree
                     const selected = () => index === treeIndex()
                     const name = () => {
                       const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")

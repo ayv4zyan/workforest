@@ -53,8 +53,8 @@ test("worktree details follow selection and long rows fit the pane after resizin
     const main = findText(setup.captureCharFrame(), "(main)")
     const feature = findText(setup.captureCharFrame(), "feature-long")
     const short = findText(setup.captureCharFrame(), "short-feature")
-    expect(feature.y - main.y).toBe(2)
-    expect(short.y - feature.y).toBe(1)
+    expect(main.y - feature.y).toBe(1)
+    expect(short.y - main.y).toBe(2)
     await setup.mockMouse.click(feature.x, feature.y)
     await paint(setup)
     for (const width of [90, 60]) {
@@ -63,8 +63,8 @@ test("worktree details follow selection and long rows fit the pane after resizin
       const frame = setup.captureCharFrame()
       const selected = findText(frame, "feature-")
       const next = findText(frame, "short-feature")
-      expect(next.y - selected.y).toBe(2)
-      expect(selected.y - findText(frame, "(main)").y).toBe(1)
+      expect(next.y - selected.y).toBe(3)
+      expect(findText(frame, "(main)").y - selected.y).toBe(2)
       const lines = frame.split("\n")
       // The long branch and path must leave the pane's right border intact.
       expect(lines[selected.y]![width - 1]).toBe("│")
@@ -532,6 +532,8 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
       if (setup.captureCharFrame().includes("Running")) break
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
+    expect(setup.captureCharFrame()).toContain("Running (1)")
+    expect(setup.captureCharFrame()).toContain("Not running (0)")
     expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("■")
     expect(setup.captureCharFrame()).not.toContain("2 servers")
     setup.mockInput.pressArrow("down")
@@ -802,6 +804,44 @@ test("selected row menu follows scrolling and stays inside a resized terminal", 
     expect(menu.y + menu.height).toBeLessThanOrEqual(14)
     expect(setup.captureCharFrame()).toContain("Rename")
     expect(setup.captureCharFrame()).toContain("Delete")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("worktree groups sort names and collapse with mouse and keyboard", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-groups-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  for (const name of ["zebra", "Alpha", "beta"]) createWorktree({ repoPath: repo, home, projectId: project.id, name })
+  const setup = await testRender(() => <App />, { width: 100, height: 24 })
+  try {
+    await paint(setup)
+    const frame = setup.captureCharFrame()
+    expect(findText(frame, "Running (0)").y).toBeLessThan(findText(frame, "Not running (4)").y)
+    expect(findText(frame, "Alpha").y).toBeLessThan(findText(frame, "beta").y)
+    expect(findText(frame, "beta").y).toBeLessThan(findText(frame, "zebra").y)
+    const header = findById(setup.renderer.root, "tree-group-stopped")!
+    await setup.mockMouse.click(header.x + 1, header.y)
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toContain("zebra")
+    expect(setup.captureCharFrame()).toContain("▸ Not running (4)")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("zebra")
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    expect(findById(setup.renderer.root, "btn-copy-path")).toBeTruthy()
   } finally {
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
