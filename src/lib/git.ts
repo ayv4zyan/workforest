@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from "node:fs"
+import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { exec, execOk, execOkAsync } from "./exec.ts"
 import { projectTreesDir } from "./home.ts"
@@ -135,10 +135,13 @@ export function renameWorktree(opts: {
   home: string
   projectId: string
 }): { path: string; branch: string | null } {
-  const { repoPath, tree, newName, home, projectId } = opts
+  const { repoPath, tree, newName } = opts
   if (tree.isMain) throw new Error("Cannot rename the main worktree")
   validateName(repoPath, newName)
-  const dest = join(projectTreesDir(home, projectId), newName)
+  const dest = join(dirname(tree.path), basename(newName))
+  if (!samePath(tree.path, dest) && existsSync(dest)) {
+    throw new Error(`Worktree destination already exists at ${dest}`)
+  }
   if (tree.branch && tree.branch !== newName && branchExists(repoPath, newName)) {
     throw new Error(`Branch "${newName}" already exists`)
   }

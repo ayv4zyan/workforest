@@ -49,6 +49,7 @@ const minProjectPaneWidth = 16
 const minTreePaneWidth = 24
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type Modal =
+  | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
   | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
@@ -60,6 +61,14 @@ type Modal =
   | { kind: "logs"; text: string }
 
 const dataDir = () => workforestHome()
+
+function RenameProgress() {
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const [frame, setFrame] = createSignal(0)
+  const timer = setInterval(() => setFrame((value) => (value + 1) % frames.length), 100)
+  onCleanup(() => clearInterval(timer))
+  return <text id="rename-progress" height={1} fg={theme.accent} selectable={false}>{`${frames[frame()]} Generating a name…`}</text>
+}
 
 export function App() {
   const renderer = useRenderer()
@@ -268,7 +277,6 @@ export function App() {
     return [
       { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
       ...serverActions,
-      ...(busy() && renameRequest ? [{ id: "btn-cancel-generation", label: "cancel rename", onPress: () => renameRequest?.abort() }] : []),
       { id: "btn-quit", label: "quit", onPress: quit },
     ]
   }
@@ -474,19 +482,21 @@ export function App() {
       setStatus("pick a linked worktree with a branch to auto-rename")
       return
     }
-    setModal(null)
     const request = new AbortController()
     renameRequest = request
     setBusy(true)
-    setStatus(`asking Luna High for a name for ${tree.displayName}… (esc to cancel)`)
+    setStatus("")
+    showModal({ kind: "auto-rename" })
     try {
       const name = await suggestWorktreeName(project.path, tree, request.signal)
+      request.signal.throwIfAborted()
       setSelectedProjectId(project.id)
       loadTreesFor(project.id)
       pickTree(tree.path)
       showModal({ kind: "rename", value: name, target: { project, tree } })
       setStatus(`Luna suggested ${name} — edit or submit to rename`)
     } catch (error) {
+      setModal(null)
       setStatus(request.signal.aborted ? "auto-rename cancelled" : error instanceof Error ? error.message : String(error))
     } finally {
       renameRequest = undefined
@@ -571,6 +581,11 @@ export function App() {
       return
     }
     if (modal()) {
+      if (modal()?.kind === "auto-rename") {
+        key.preventDefault()
+        if (["escape", "enter", "return"].includes(key.name)) renameRequest?.abort()
+        return
+      }
       if (modal()?.kind === "logs") {
         if (["escape", "enter", "return"].includes(key.name)) {
           key.preventDefault()
@@ -838,6 +853,8 @@ export function App() {
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
+      case "auto-rename":
+        return "auto rename"
       case "add-project":
         return "add project"
       case "new-tree":
@@ -861,6 +878,8 @@ export function App() {
 
   function modalBody(current: Modal): string {
     switch (current.kind) {
+      case "auto-rename":
+        return "Reviewing worktree changes. You can edit the suggested name before renaming."
       case "add-project":
         return "Path to the main checkout"
       case "new-tree":
@@ -1210,6 +1229,11 @@ export function App() {
         </>}
       </Show>
 
+      <Show when={modal()?.kind === "auto-rename"}>
+        <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}
+          onMouseDown={(event) => { event.stopPropagation(); event.preventDefault() }}
+          onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
+      </Show>
       <Show when={modal()} fallback={<box width={0} height={0} />}>
         {(current: () => Modal) => (
           <box
@@ -1237,7 +1261,16 @@ export function App() {
                 <scrollbox flexGrow={1} focused={true}>
                   <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
                 </scrollbox>
-                <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+                </box>
+              </>
+            ) : current().kind === "auto-rename" ? (
+              <>
+                <RenameProgress />
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-cancel-generation" label="cancel" active onPress={() => renameRequest?.abort()} />
+                </box>
               </>
             ) : (
               <>
@@ -1264,7 +1297,7 @@ export function App() {
                   />
                 ) : null}
                 <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
-                <box flexDirection="row" gap={1}>
+                <box flexDirection="row" justifyContent="flex-end" gap={1}>
                   <ActionButton
                     id="btn-submit"
                     label={"value" in current() ? "submit" : "confirm"}
