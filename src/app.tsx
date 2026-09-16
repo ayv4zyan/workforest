@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
@@ -33,7 +33,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "pane-actions"
 type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
-type ModalFocus = "input" | "submit" | "cancel"
+type ModalFocus = "input" | "rename-folder" | "submit" | "cancel"
 type Action = {
   id: string
   label: string
@@ -48,10 +48,13 @@ const defaultProjectPaneWidth = 28
 const minProjectPaneWidth = 16
 const minTreePaneWidth = 24
 type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
+type TreeGroup = "running" | "stopped"
+type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 type Modal =
+  | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
-  | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
+  | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
   | { kind: "stop"; rows: ServerRow[] }
@@ -60,6 +63,14 @@ type Modal =
   | { kind: "logs"; text: string }
 
 const dataDir = () => workforestHome()
+
+function RenameProgress() {
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const [frame, setFrame] = createSignal(0)
+  const timer = setInterval(() => setFrame((value) => (value + 1) % frames.length), 100)
+  onCleanup(() => clearInterval(timer))
+  return <text id="rename-progress" height={1} fg={theme.accent} selectable={false}>{`${frames[frame()]} Generating a name…`}</text>
+}
 
 export function App() {
   const renderer = useRenderer()
@@ -72,6 +83,8 @@ export function App() {
   let projectList: BoxRenderable | undefined
   let treeList: BoxRenderable | undefined
   const [pane, setPane] = createSignal<Pane>("projects")
+  const [searchEditing, setSearchEditing] = createSignal(false)
+  const [queries, setQueries] = createSignal<Record<Pane, string>>({ projects: "", trees: "" })
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
   const [headerIndex, setHeaderIndex] = createSignal(0)
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
@@ -79,6 +92,8 @@ export function App() {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [trees, setTrees] = createSignal<TreeRow[]>([])
   const [selectedTreePath, setSelectedTreePath] = createSignal<string | null>(null)
+  const [collapsedGroups, setCollapsedGroups] = createSignal<Record<TreeGroup, boolean>>({ running: false, stopped: false })
+  const [focusedGroup, setFocusedGroup] = createSignal<TreeGroup | null>(null)
   const [servers, setServers] = createSignal<ServerRow[]>([])
   const [status, setStatus] = createSignal("")
   const [busy, setBusy] = createSignal(false)
@@ -111,13 +126,92 @@ export function App() {
     }
   }
 
+  const matches = (query: string, name: string) =>
+    name.toLowerCase().includes(query.toLowerCase())
+  const filteredProjects = createMemo(() => projects().filter((project) => matches(queries().projects, project.name)))
+  const filteredTrees = createMemo(() => trees().filter((tree) => matches(queries().trees, tree.displayName)))
+
+  function openSearch() {
+    if (modal() || menu()) return
+    setFocusRow("panes")
+    setSearchEditing(true)
+  }
+
+  function clearSearch() {
+    setQueries((current) => ({ ...current, [pane()]: "" }))
+    setSearchEditing(false)
+    setFocusRow("panes")
+  }
+
+  createEffect(() => {
+    const rows = filteredProjects()
+    if (rows.some((row) => row.id === selectedProjectId())) return
+    const next = rows[0]?.id ?? null
+    setSelectedProjectId(next)
+    if (next) loadTreesFor(next)
+    else {
+      setTrees([])
+      setSelectedTreePath(null)
+    }
+  })
+
+  createEffect(() => {
+    const rows = filteredTrees()
+    if (!queries().trees) return
+    setFocusedGroup(null)
+    if (!rows.some((row) => row.path === selectedTreePath())) setSelectedTreePath(rows[0]?.path ?? null)
+  })
+
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
-  const selectedTree = () => trees().find((tree) => tree.path === selectedTreePath()) ?? null
+  const selectedTree = () => focusedGroup() ? null : trees().find((tree) => tree.path === selectedTreePath()) ?? null
   const treeServers = () => {
     const tree = selectedTree()
     return tree ? serversForWorktree(servers(), tree.path) : []
   }
   const activeServers = () => treeServers().filter((row) => row.state !== "failed")
+  const groupedTrees = createMemo(() => {
+    const sorted = [...filteredTrees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
+    const running: TreeRow[] = []
+    const stopped: TreeRow[] = []
+    for (const tree of sorted) {
+      const active = serversForWorktree(servers(), tree.path).some((row) => row.state !== "failed")
+      if (active) running.push(tree)
+      else stopped.push(tree)
+    }
+    return { running, stopped }
+  })
+  const treeEntries = createMemo<TreeEntry[]>(() => {
+    const entries: TreeEntry[] = []
+    for (const group of ["running", "stopped"] as const) {
+      if (queries().trees && !groupedTrees()[group].length) continue
+      entries.push({ kind: "group", group, count: groupedTrees()[group].length })
+      if (queries().trees || !collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
+    }
+    return entries
+  })
+
+  // Keep an active selection visible when its server state changes sections.
+  createEffect(() => {
+    if (focusedGroup()) return
+    for (const group of ["running", "stopped"] as const) {
+      if (collapsedGroups()[group] && groupedTrees()[group].some((tree) => tree.path === selectedTreePath())) {
+        setCollapsedGroups((current) => ({ ...current, [group]: false }))
+      }
+    }
+  })
+
+  function toggleGroup(group: TreeGroup) {
+    setFocusedGroup(group)
+    setCollapsedGroups((current) => ({ ...current, [group]: !current[group] }))
+  }
+
+  function pickEntry(index: number) {
+    const entry = treeEntries()[index]
+    if (!entry) return
+    if (entry.kind === "group") setFocusedGroup(entry.group)
+    else pickTree(entry.tree.path)
+  }
+
 
   const visibleRows = <T,>(rows: T[], selected: number, height: number, linesPerItem: number) => {
     const count = Math.max(1, Math.floor(height / linesPerItem))
@@ -181,10 +275,13 @@ export function App() {
     const path = listed.some((tree) => tree.path === selectedTreePath())
       ? selectedTreePath()
       : (listed[0]?.path ?? null)
+    setFocusedGroup(null)
+    setCollapsedGroups({ running: false, stopped: false })
     setSelectedTreePath(path)
   }
 
   function pickTree(path: string) {
+    setFocusedGroup(null)
     setSelectedTreePath(path)
   }
 
@@ -230,6 +327,7 @@ export function App() {
   }
 
   function focusPane(next: Pane) {
+    setSearchEditing(false)
     setPane(next)
     setFocusRow("panes")
   }
@@ -242,16 +340,15 @@ export function App() {
 
   function movePaneSelection(delta: number) {
     if (pane() === "projects") {
-      const next = Math.max(0, Math.min(projectIndex() + delta, projects().length - 1))
-      const project = projects()[next]
+      const next = Math.max(0, Math.min(projectIndex() + delta, filteredProjects().length - 1))
+      const project = filteredProjects()[next]
       if (!project || project.id === selectedProjectId()) return
       setSelectedProjectId(project.id)
       loadTreesFor(project.id)
       return
     }
-    const next = Math.max(0, Math.min(treeIndex() + delta, trees().length - 1))
-    const tree = trees()[next]
-    if (tree) pickTree(tree.path)
+    const next = Math.max(0, Math.min(treeIndex() + delta, treeEntries().length - 1))
+    pickEntry(next)
   }
 
   function headerActions(): Action[] {
@@ -268,7 +365,6 @@ export function App() {
     return [
       { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
       ...serverActions,
-      ...(busy() && renameRequest ? [{ id: "btn-cancel-generation", label: "cancel rename", onPress: () => renameRequest?.abort() }] : []),
       { id: "btn-quit", label: "quit", onPress: quit },
     ]
   }
@@ -315,8 +411,8 @@ export function App() {
     focusPane(target)
     const list = target === "projects" ? projectList : treeList
     const row = target === "projects"
-      ? selectedRowTop(projectIndex(), projects().length, projectListHeight(), 1)
-      : selectedRowTop(treeIndex(), trees().length, treeListHeight(), 2)
+      ? selectedRowTop(projectIndex(), filteredProjects().length, projectListHeight(), 1)
+      : selectedRowTop(treeIndex(), treeEntries().length, treeListHeight() - 1, 1)
     setMenuIndex(0)
     setSubmenuIndex(0)
     setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
@@ -390,6 +486,7 @@ export function App() {
   function modalFocusables(): ModalFocus[] {
     const current = modal()
     if (!current) return []
+    if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
 
@@ -406,6 +503,12 @@ export function App() {
     if (!current) return
     const hasInput = "value" in current
     const focus = modalFocus()
+
+    if (current.kind === "rename" && (name === "up" || name === "down")) {
+      preventDefault()
+      cycleModalFocus(name === "up" ? -1 : 1)
+      return
+    }
 
     if (hasInput && focus === "input") {
       if (name === "down") {
@@ -424,6 +527,10 @@ export function App() {
       if (focus === "submit") setModalFocus("cancel")
       else if (focus === "cancel") setModalFocus("submit")
     }
+  }
+
+  function toggleRenameFolder() {
+    setModal((current) => current?.kind === "rename" ? { ...current, renameFolder: !current.renameFolder, error: undefined } : current)
   }
 
   function openAddProject() {
@@ -474,19 +581,21 @@ export function App() {
       setStatus("pick a linked worktree with a branch to auto-rename")
       return
     }
-    setModal(null)
     const request = new AbortController()
     renameRequest = request
     setBusy(true)
-    setStatus(`asking Luna High for a name for ${tree.displayName}… (esc to cancel)`)
+    setStatus("")
+    showModal({ kind: "auto-rename" })
     try {
       const name = await suggestWorktreeName(project.path, tree, request.signal)
+      request.signal.throwIfAborted()
       setSelectedProjectId(project.id)
       loadTreesFor(project.id)
       pickTree(tree.path)
       showModal({ kind: "rename", value: name, target: { project, tree } })
       setStatus(`Luna suggested ${name} — edit or submit to rename`)
     } catch (error) {
+      setModal(null)
       setStatus(request.signal.aborted ? "auto-rename cancelled" : error instanceof Error ? error.message : String(error))
     } finally {
       renameRequest = undefined
@@ -571,6 +680,11 @@ export function App() {
       return
     }
     if (modal()) {
+      if (modal()?.kind === "auto-rename") {
+        key.preventDefault()
+        if (["escape", "enter", "return"].includes(key.name)) renameRequest?.abort()
+        return
+      }
       if (modal()?.kind === "logs") {
         if (["escape", "enter", "return"].includes(key.name)) {
           key.preventDefault()
@@ -591,6 +705,11 @@ export function App() {
         handleModalArrow(key.name, () => key.preventDefault())
         return
       }
+      if (modalFocus() === "rename-folder" && ["space", "return", "enter"].includes(key.name)) {
+        key.preventDefault()
+        toggleRenameFolder()
+        return
+      }
       if (key.name === "return" || key.name === "enter") {
         if (modalFocus() === "cancel") {
           key.preventDefault()
@@ -600,6 +719,26 @@ export function App() {
           acceptModal()
         }
       }
+      return
+    }
+    if (searchEditing()) {
+      if (key.name === "escape") {
+        key.preventDefault()
+        clearSearch()
+      } else if (key.name === "return" || key.name === "enter") {
+        key.preventDefault()
+        setSearchEditing(false)
+      }
+      return
+    }
+    if (key.name === "/" || key.sequence === "/") {
+      key.preventDefault()
+      openSearch()
+      return
+    }
+    if (key.name === "escape" && queries()[pane()]) {
+      key.preventDefault()
+      clearSearch()
       return
     }
     if (key.name === "q") {
@@ -641,6 +780,11 @@ export function App() {
           movePaneSelection(-1)
         }
       }
+      return
+    }
+    if (["space", "return", "enter"].includes(key.name) && pane() === "trees" && focusRow() === "panes" && focusedGroup()) {
+      key.preventDefault()
+      toggleGroup(focusedGroup()!)
       return
     }
     if (key.name === "return" || key.name === "enter") {
@@ -745,11 +889,14 @@ export function App() {
           repoPath: project.path,
           tree,
           newName: value,
+          renameFolder: current.renameFolder,
           home: dataDir(),
           projectId: project.id,
         })
-        moveRunRecord(dataDir(), project.id, tree.path, renamed.path)
-        movePort(dataDir(), tree.path, renamed.path)
+        if (renamed.path !== tree.path) {
+          moveRunRecord(dataDir(), project.id, tree.path, renamed.path)
+          movePort(dataDir(), tree.path, renamed.path)
+        }
         setSelectedTreePath(renamed.path)
         setModal(null)
         refresh()
@@ -833,11 +980,13 @@ export function App() {
     showModal({ kind: "start", value: String(port), project, tree })
   }
 
-  const projectIndex = () => Math.max(0, projects().findIndex((project) => project.id === selectedProjectId()))
-  const treeIndex = () => Math.max(0, trees().findIndex((tree) => tree.path === selectedTreePath()))
+  const projectIndex = () => Math.max(0, filteredProjects().findIndex((project) => project.id === selectedProjectId()))
+  const treeIndex = () => Math.max(0, treeEntries().findIndex((entry) => entry.kind === "group" ? entry.group === focusedGroup() : !focusedGroup() && entry.tree.path === selectedTreePath()))
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
+      case "auto-rename":
+        return "auto rename"
       case "add-project":
         return "add project"
       case "new-tree":
@@ -861,12 +1010,14 @@ export function App() {
 
   function modalBody(current: Modal): string {
     switch (current.kind) {
+      case "auto-rename":
+        return "Reviewing worktree changes. You can edit the suggested name before renaming."
       case "add-project":
         return "Path to the main checkout"
       case "new-tree":
         return "Name is used for the directory and the branch"
       case "rename":
-        return "Renames the directory and the branch"
+        return "Renames the branch. Renaming the folder changes its path; apps using this worktree may need to reopen it."
       case "delete": {
         const tree = selectedTree()
         const extra = tree?.dirty ? " Working tree is dirty; this force-deletes." : ""
@@ -911,7 +1062,7 @@ export function App() {
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
-      : "value" in current ? 14 : 12
+      : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
     return {
@@ -988,18 +1139,18 @@ export function App() {
               <ActionButton id="btn-add" label="+" compact disabled={busy()}
                 active={pane() === "projects" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("projects"); openAddProject() }} />
-              <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
+              <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${filteredProjects().length})${queries().projects ? ` /${queries().projects}` : ""}`}</text>
             </box>
             <Show
-              when={projects().length > 0}
+              when={filteredProjects().length > 0}
               fallback={
                 <box
                   onMouseDown={(event) => {
                     event.stopPropagation()
-                    openAddProject()
+                    if (!queries().projects) openAddProject()
                   }}
                 >
-                  <text fg={theme.muted} selectable={false}>no projects</text>
+                  <text fg={theme.muted} selectable={false}>{queries().projects ? "no matching projects" : "no projects"}</text>
                 </box>
               }
             >
@@ -1014,15 +1165,15 @@ export function App() {
                   overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("projects")
-                    wheelSelect(event, projectIndex(), projects().length, (index) => {
-                      const project = projects()[index]
+                    wheelSelect(event, projectIndex(), filteredProjects().length, (index) => {
+                      const project = filteredProjects()[index]
                       if (!project) return
                       setSelectedProjectId(project.id)
                       loadTreesFor(project.id)
                     })
                   }}
                 >
-                  <For each={visibleRows(projects(), projectIndex(), projectListHeight(), 1)}>{({ row: project, index }) => {
+                  <For each={visibleRows(filteredProjects(), projectIndex(), projectListHeight(), 1)}>{({ row: project, index }) => {
                     const selected = () => index === projectIndex()
                     return <box height={1} flexShrink={0} overflow="hidden"
                       backgroundColor={selected()
@@ -1087,6 +1238,8 @@ export function App() {
           <box
             id="pane-trees"
             flexGrow={1}
+            minWidth={0}
+            overflow="hidden"
             border={["top", "right", "bottom"]}
             borderColor={pane() === "trees" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             titleColor={pane() === "trees" && focusRow() === "panes" ? theme.accent : theme.muted}
@@ -1099,11 +1252,11 @@ export function App() {
               <ActionButton id="btn-new" label="+" compact disabled={!selectedProject() || busy()}
                 active={pane() === "trees" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("trees"); openNewTree() }} />
-              <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${trees().length})`}</text>
+              <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${filteredTrees().length})${queries().trees ? ` /${queries().trees}` : ""}`}</text>
             </box>
             <Show
-              when={trees().length > 0}
-              fallback={<text fg={theme.muted} selectable={false}>no worktrees</text>}
+              when={filteredTrees().length > 0}
+              fallback={<text fg={theme.muted} selectable={false}>{queries().trees ? "no matching worktrees" : "no worktrees"}</text>}
             >
               <box flexGrow={1} flexDirection="row" ref={(node) => {
                 node.onSizeChange = () => setTreeListHeight(node.height)
@@ -1116,20 +1269,30 @@ export function App() {
                   overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("trees")
-                    wheelSelect(event, treeIndex(), trees().length, (index) => {
-                      const tree = trees()[index]
-                      if (tree) pickTree(tree.path)
-                    })
+                    wheelSelect(event, treeIndex(), treeEntries().length, pickEntry)
                   }}
                 >
-                  <For each={visibleRows(trees(), treeIndex(), treeListHeight(), 2)}>{({ row: tree, index }) => {
+                  <For each={visibleRows(treeEntries(), treeIndex(), treeListHeight() - 1, 1)}>{({ row: entry, index }) => {
+                    if (entry.kind === "group") return <box
+                      id={`tree-group-${entry.group}`} height={1} flexShrink={0}
+                      backgroundColor={focusedGroup() === entry.group ? theme.selectedBg : theme.panel}
+                      onMouseOver={() => renderer.setMousePointer("pointer")}
+                      onMouseOut={() => renderer.setMousePointer("default")}
+                      onMouseDown={(event) => {
+                        event.stopPropagation()
+                        if (modal() || menu() || event.button !== 0) return
+                        focusPane("trees")
+                        toggleGroup(entry.group)
+                      }}
+                    ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${collapsedGroups()[entry.group] ? "▸" : "▾"} ${entry.group === "running" ? "Running" : "Not running"} (${entry.count})`}</text></box>
+                    const tree = entry.tree
                     const selected = () => index === treeIndex()
                     const name = () => {
                       const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")
                       const status = statusParts.join(" ")
                       return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
                     }
-                    return <box height={2} flexShrink={0} flexDirection="column" overflow="hidden"
+                    return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
                       backgroundColor={selected()
                         ? hoveredTreeIndex() === index ? theme.selectedHoverBg : theme.selectedBg
                         : hoveredTreeIndex() === index ? theme.hoverBg : theme.panel}
@@ -1143,8 +1306,10 @@ export function App() {
                         if (event.button === 2) openMenu("trees", event.x, event.y)
                       }}
                     >
-                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
-                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.muted} selectable={false}>{`   ${tree.branch ?? "detached"}  ${displayPath(tree.path)}`}</text>
+                      <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+                      <Show when={selected()}>
+                        <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={theme.selectedFg} selectable={false}>{`   ${tree.isMain ? `${tree.branch ?? "detached"}  ` : !tree.branch ? "detached  " : ""}${displayPath(tree.path)}`}</text>
+                      </Show>
                     </box>
                   }}</For>
                 </box>
@@ -1152,6 +1317,27 @@ export function App() {
             </Show>
           </box>
 
+      </box>
+
+      <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row" gap={1}>
+        <Show when={searchEditing() || queries()[pane()]} fallback={
+          <ActionButton id="btn-search" label="/ search" compact onPress={openSearch} />
+        }>
+          <text fg={theme.muted} selectable={false}>{pane() === "projects" ? "Search projects" : "Search worktrees"}</text>
+          <text fg={theme.accent} selectable={false}>/</text>
+          <input
+            id="search-input"
+            flexGrow={1}
+            focused={searchEditing() && !modal() && !menu()}
+            value={queries()[pane()]}
+            backgroundColor={theme.bg}
+            textColor={theme.text}
+            cursorColor={theme.accent}
+            onMouseDown={openSearch}
+            onInput={(value) => setQueries((current) => ({ ...current, [pane()]: value }))}
+          />
+          <ActionButton id="btn-search-clear" label="Esc clear" compact onPress={clearSearch} />
+        </Show>
       </box>
 
       <Show when={status()}>
@@ -1206,10 +1392,16 @@ export function App() {
         </>}
       </Show>
 
+      <Show when={modal()?.kind === "auto-rename"}>
+        <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}
+          onMouseDown={(event) => { event.stopPropagation(); event.preventDefault() }}
+          onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
+      </Show>
       <Show when={modal()} fallback={<box width={0} height={0} />}>
         {(current: () => Modal) => (
           <box
             position="absolute"
+            id="modal-dialog"
             left={modalSize(current()).left}
             top={modalSize(current()).top}
             width={modalSize(current()).width}
@@ -1233,7 +1425,16 @@ export function App() {
                 <scrollbox flexGrow={1} focused={true}>
                   <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
                 </scrollbox>
-                <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+                </box>
+              </>
+            ) : current().kind === "auto-rename" ? (
+              <>
+                <RenameProgress />
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-cancel-generation" label="cancel" active onPress={() => renameRequest?.abort()} />
+                </box>
               </>
             ) : (
               <>
@@ -1259,8 +1460,20 @@ export function App() {
                     }}
                   />
                 ) : null}
+                <Show when={current().kind === "rename"}>
+                  <ActionButton
+                    id="btn-rename-folder"
+                    compact
+                    label={`${(current() as Extract<Modal, { kind: "rename" }>).renameFolder ? "[x]" : "[ ]"} Also rename worktree folder`}
+                    active={modalFocus() === "rename-folder"}
+                    onPress={() => {
+                      setModalFocus("rename-folder")
+                      toggleRenameFolder()
+                    }}
+                  />
+                </Show>
                 <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
-                <box flexDirection="row" gap={1}>
+                <box flexDirection="row" justifyContent="flex-end" gap={1}>
                   <ActionButton
                     id="btn-submit"
                     label={"value" in current() ? "submit" : "confirm"}

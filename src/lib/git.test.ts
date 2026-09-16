@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execOk } from "./exec.ts"
@@ -56,6 +56,7 @@ test("create, rename both directory and branch, then delete", () => {
     repoPath: repo,
     tree: created,
     newName: "feat-login",
+    renameFolder: true,
     home,
     projectId: "demo",
   })
@@ -70,4 +71,47 @@ test("create, rename both directory and branch, then delete", () => {
   expect(feat).toBeTruthy()
   removeWorktree({ repoPath: repo, tree: feat!, force: true })
   expect(listWorktrees(repo).map((tree) => tree.branch)).not.toContain("feat-login")
+})
+
+test("rename preserves an external worktree parent, including repeated namespaced renames", () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const external = mkdtempSync(join(tmpdir(), "wf-external-"))
+  const original = join(external, "custom-folder")
+  execOk(["git", "worktree", "add", "-b", "agent/old-name", original], { cwd: repo })
+  writeFileSync(join(original, "local.txt"), "keep me")
+  for (const newName of ["agent/fix-login", "agent/fix-session", "plain-name"]) {
+    const tree = listWorktrees(repo).find((row) => !row.isMain)!
+    const renamed = renameWorktree({ repoPath: repo, tree, newName, renameFolder: true, home, projectId: "demo" })
+    const expected = join(external, newName.split("/").at(-1)!)
+    expect(samePath(renamed.path, expected)).toBe(true)
+    expect(listWorktrees(repo).find((row) => !row.isMain)?.branch).toBe(newName)
+    expect(existsSync(join(expected, "local.txt"))).toBe(true)
+    expect(existsSync(tree.path)).toBe(false)
+    expect(existsSync(join(home, "trees"))).toBe(false)
+  }
+})
+
+test("rename rejects an occupied sibling without changing the branch or moving the worktree", () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "original" })
+  mkdirSync(join(tree.path, "..", "occupied"))
+  expect(() => renameWorktree({ repoPath: repo, tree, newName: "agent/occupied", renameFolder: true, home, projectId: "demo" })).toThrow("already exists")
+  expect(existsSync(tree.path)).toBe(true)
+  expect(listWorktrees(repo).find((row) => !row.isMain)?.branch).toBe("original")
+})
+
+
+test("rename defaults to branch only even when a sibling folder has the new name", () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "original" })
+  mkdirSync(join(tree.path, "..", "occupied"))
+  writeFileSync(join(tree.path, "local.txt"), "keep me")
+  const renamed = renameWorktree({ repoPath: repo, tree, newName: "agent/occupied", home, projectId: "demo" })
+  expect(renamed.path).toBe(tree.path)
+  expect(renamed.branch).toBe("agent/occupied")
+  expect(listWorktrees(repo).find((row) => row.path === tree.path)?.branch).toBe("agent/occupied")
+  expect(existsSync(join(tree.path, "local.txt"))).toBe(true)
 })

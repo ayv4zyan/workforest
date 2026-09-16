@@ -35,6 +35,49 @@ async function paint(setup: { renderOnce: () => Promise<void> }) {
   await setup.renderOnce()
 }
 
+test("worktree details follow selection and long rows fit the pane after resizing", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-tree-layout-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: `feature-${"long-".repeat(20)}end` })
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: "short-feature" })
+  const setup = await testRender(() => <App />, { width: 90, height: 18 })
+  try {
+    await paint(setup)
+    const main = findText(setup.captureCharFrame(), "(main)")
+    const feature = findText(setup.captureCharFrame(), "feature-long")
+    const short = findText(setup.captureCharFrame(), "short-feature")
+    expect(main.y - feature.y).toBe(1)
+    expect(short.y - main.y).toBe(2)
+    await setup.mockMouse.click(feature.x, feature.y)
+    await paint(setup)
+    for (const width of [90, 60]) {
+      setup.renderer.resize(width, 18)
+      await paint(setup)
+      const frame = setup.captureCharFrame()
+      const selected = findText(frame, "feature-")
+      const next = findText(frame, "short-feature")
+      expect(next.y - selected.y).toBe(3)
+      expect(findText(frame, "(main)").y - selected.y).toBe(2)
+      const lines = frame.split("\n")
+      // The long branch and path must leave the pane's right border intact.
+      expect(lines[selected.y]![width - 1]).toBe("│")
+      expect(lines[selected.y + 1]![width - 1]).toBe("│")
+      expect(lines[selected.y + 1]).not.toContain("feature-long")
+    }
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("test renderer can paint text", async () => {
   const setup = await testRender(() => (
     <box>
@@ -334,7 +377,7 @@ test("modal left and right stay in the path field", async () => {
 
 
 
-test("auto-rename mouse action suggests a name and submit renames branch and directory", async () => {
+test("auto-rename defaults to branch only and folder rename is opt-in", async () => {
   const root = mkdtempSync(join(tmpdir(), "wf-auto-ui-"))
   const oldHome = process.env.WORKFOREST_HOME
   const oldPath = process.env.PATH
@@ -351,7 +394,7 @@ test("auto-rename mouse action suggests a name and submit renames branch and dir
   const executable = join(root, "codex")
   writeFileSync(executable, `#!${process.execPath}
 const args = process.argv.slice(2)
-await Bun.sleep(100)
+await Bun.sleep(500)
 await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({name: 'agent/fix-login-flow'}))
 `)
   chmodSync(executable, 0o755)
@@ -383,14 +426,45 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await paint(setup)
     await click("btn-rename")
     await click("btn-auto-rename")
-    expect(setup.captureCharFrame()).toContain("cancel rename")
+    expect(setup.captureCharFrame()).toContain("Generating a name…")
+    expect(findById(setup.renderer.root, "btn-submit")).toBeUndefined()
+    const progressBefore = setup.captureCharFrame()
+    await Bun.sleep(120)
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toBe(progressBefore)
+    await click("btn-cancel-generation")
+    for (let i = 0; i < 60 && findById(setup.renderer.root, "rename-progress"); i++) await paint(setup)
+    expect(findById(setup.renderer.root, "rename-progress")).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain("auto-rename cancelled")
+    expect(listWorktrees(repo)[1]?.branch).toBe("old-feature")
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    await click("btn-rename")
+    await click("btn-auto-rename")
     for (let i = 0; i < 60 && !findById(setup.renderer.root, "modal-input"); i++) await paint(setup)
     expect(setup.captureCharFrame()).toContain("agent/fix-login-flow")
     expect(listWorktrees(repo)[1]?.branch).toBe("old-feature")
     await click("btn-submit")
     const renamed = listWorktrees(repo)[1]!
     expect(renamed.branch).toBe("agent/fix-login-flow")
-    expect(renamed.path.endsWith("/agent/fix-login-flow")).toBe(true)
+    expect(renamed.path).toBe(tree.path)
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    await click("btn-rename")
+    await click("btn-manual-rename")
+    expect(setup.captureCharFrame()).toContain("[ ] Also rename worktree folder")
+    await click("btn-rename-folder")
+    expect(setup.captureCharFrame()).toContain("[x] Also rename worktree folder")
+    const dialog = findById(setup.renderer.root, "modal-dialog")!
+    const checkbox = findById(setup.renderer.root, "btn-rename-folder")!
+    expect(checkbox.height).toBe(1)
+    for (const id of ["btn-submit", "btn-cancel"]) {
+      const button = findById(setup.renderer.root, id)!
+      expect(button.y).toBeGreaterThan(checkbox.y)
+      expect(button.y + button.height).toBeLessThan(dialog.y + dialog.height - 1)
+    }
+    await click("btn-submit")
+    expect(listWorktrees(repo)[1]!.path).toBe(join(tree.path, "..", "fix-login-flow"))
   } finally {
     setup.renderer.destroy()
     process.env.PATH = oldPath
@@ -458,6 +532,8 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
       if (setup.captureCharFrame().includes("Running")) break
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
+    expect(setup.captureCharFrame()).toContain("Running (1)")
+    expect(setup.captureCharFrame()).toContain("Not running (0)")
     expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("■")
     expect(setup.captureCharFrame()).not.toContain("2 servers")
     setup.mockInput.pressArrow("down")
@@ -728,6 +804,120 @@ test("selected row menu follows scrolling and stays inside a resized terminal", 
     expect(menu.y + menu.height).toBeLessThanOrEqual(14)
     expect(setup.captureCharFrame()).toContain("Rename")
     expect(setup.captureCharFrame()).toContain("Delete")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("worktree groups sort names and collapse with mouse and keyboard", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-groups-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  for (const name of ["zebra", "Alpha", "beta"]) createWorktree({ repoPath: repo, home, projectId: project.id, name })
+  const setup = await testRender(() => <App />, { width: 100, height: 24 })
+  try {
+    await paint(setup)
+    const frame = setup.captureCharFrame()
+    expect(findText(frame, "Running (0)").y).toBeLessThan(findText(frame, "Not running (4)").y)
+    expect(findText(frame, "Alpha").y).toBeLessThan(findText(frame, "beta").y)
+    expect(findText(frame, "beta").y).toBeLessThan(findText(frame, "zebra").y)
+    const header = findById(setup.renderer.root, "tree-group-stopped")!
+    await setup.mockMouse.click(header.x + 1, header.y)
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toContain("zebra")
+    expect(setup.captureCharFrame()).toContain("▸ Not running (4)")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("zebra")
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    expect(findById(setup.renderer.root, "btn-copy-path")).toBeTruthy()
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("bottom search filters projects and worktrees without firing shortcuts", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-search-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  process.env.WORKFOREST_HOME = home
+  for (const name of ["alpha-project", "query-project"]) {
+    const repo = join(root, name)
+    mkdirSync(repo)
+    gitOk(repo, ["init", "-b", "main"])
+    gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+    const project = addProject(home, repo)
+    createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-search" })
+    const renamed = createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-old-name" })
+    gitOk(renamed.path, ["branch", "-m", "agent/renamed"])
+  }
+  const setup = await testRender(() => <App />, { width: 100, height: 24 })
+  try {
+    await paint(setup)
+    await setup.mockInput.typeText("/")
+    await paint(setup)
+    expect(findById(setup.renderer.root, "search-input")?.y).toBeGreaterThan(18)
+    await setup.mockInput.typeText("wf-search-ui-")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("no matching projects")
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    await setup.mockInput.typeText("/")
+    await paint(setup)
+    await setup.mockInput.typeText("QUERY")
+    await paint(setup)
+    expect(setup.captureCharFrame()).not.toContain("alpha-project")
+    expect(setup.captureCharFrame()).toContain("query-project")
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    setup.mockInput.pressArrow("right")
+    await paint(setup)
+    const search = findById(setup.renderer.root, "btn-search")!
+    await setup.mockMouse.click(search.x + 1, search.y)
+    await paint(setup)
+    await setup.mockInput.typeText("FEATURE")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("feature-search")
+    expect(setup.captureCharFrame()).not.toContain("(main)")
+    expect(setup.captureCharFrame()).not.toContain("agent/renamed")
+    expect(setup.captureCharFrame()).toContain("worktrees (1)")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    await setup.mockInput.typeText("r")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("rename worktree")
+    expect(setup.captureCharFrame()).toContain("feature-search")
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    await setup.mockInput.typeText("/")
+    await paint(setup)
+    await setup.mockInput.typeText("no-match")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("no matching worktrees")
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("(main)")
+    expect(findById(setup.renderer.root, "search-input")).toBeUndefined()
+    setup.mockInput.pressArrow("left")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("QUERY")
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("alpha-project")
   } finally {
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
