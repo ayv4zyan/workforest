@@ -316,7 +316,7 @@ export function App() {
     const list = target === "projects" ? projectList : treeList
     const row = target === "projects"
       ? selectedRowTop(projectIndex(), projects().length, projectListHeight(), 1)
-      : selectedRowTop(treeIndex(), trees().length, treeListHeight(), 2)
+      : selectedRowTop(treeIndex(), trees().length, treeListHeight() - 1, 1)
     setMenuIndex(0)
     setSubmenuIndex(0)
     setMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
@@ -1087,6 +1087,8 @@ export function App() {
           <box
             id="pane-trees"
             flexGrow={1}
+            minWidth={0}
+            overflow="hidden"
             border={["top", "right", "bottom"]}
             borderColor={pane() === "trees" && focusRow() === "panes" ? theme.borderFocus : theme.border}
             titleColor={pane() === "trees" && focusRow() === "panes" ? theme.accent : theme.muted}
@@ -1122,14 +1124,14 @@ export function App() {
                     })
                   }}
                 >
-                  <For each={visibleRows(trees(), treeIndex(), treeListHeight(), 2)}>{({ row: tree, index }) => {
+                  <For each={visibleRows(trees(), treeIndex(), treeListHeight() - 1, 1)}>{({ row: tree, index }) => {
                     const selected = () => index === treeIndex()
                     const name = () => {
                       const [indicator, ...statusParts] = serverStatus(serversForWorktree(servers(), tree.path)).split(" ")
                       const status = statusParts.join(" ")
                       return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
                     }
-                    return <box height={2} flexShrink={0} flexDirection="column" overflow="hidden"
+                    return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
                       backgroundColor={selected()
                         ? hoveredTreeIndex() === index ? theme.selectedHoverBg : theme.selectedBg
                         : hoveredTreeIndex() === index ? theme.hoverBg : theme.panel}
@@ -1143,8 +1145,10 @@ export function App() {
                         if (event.button === 2) openMenu("trees", event.x, event.y)
                       }}
                     >
-                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
-                      <text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.muted} selectable={false}>{`   ${tree.branch ?? "detached"}  ${displayPath(tree.path)}`}</text>
+                      <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+                      <Show when={selected()}>
+                        <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={theme.selectedFg} selectable={false}>{`   ${tree.isMain ? `${tree.branch ?? "detached"}  ` : !tree.branch ? "detached  " : ""}${displayPath(tree.path)}`}</text>
+                      </Show>
                     </box>
                   }}</For>
                 </box>

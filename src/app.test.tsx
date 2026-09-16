@@ -35,6 +35,49 @@ async function paint(setup: { renderOnce: () => Promise<void> }) {
   await setup.renderOnce()
 }
 
+test("worktree details follow selection and long rows fit the pane after resizing", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-tree-layout-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: `feature-${"long-".repeat(20)}end` })
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: "short-feature" })
+  const setup = await testRender(() => <App />, { width: 90, height: 18 })
+  try {
+    await paint(setup)
+    const main = findText(setup.captureCharFrame(), "(main)")
+    const feature = findText(setup.captureCharFrame(), "feature-long")
+    const short = findText(setup.captureCharFrame(), "short-feature")
+    expect(feature.y - main.y).toBe(2)
+    expect(short.y - feature.y).toBe(1)
+    await setup.mockMouse.click(feature.x, feature.y)
+    await paint(setup)
+    for (const width of [90, 60]) {
+      setup.renderer.resize(width, 18)
+      await paint(setup)
+      const frame = setup.captureCharFrame()
+      const selected = findText(frame, "feature-")
+      const next = findText(frame, "short-feature")
+      expect(next.y - selected.y).toBe(2)
+      expect(selected.y - findText(frame, "(main)").y).toBe(1)
+      const lines = frame.split("\n")
+      // The long branch and path must leave the pane's right border intact.
+      expect(lines[selected.y]![width - 1]).toBe("│")
+      expect(lines[selected.y + 1]![width - 1]).toBe("│")
+      expect(lines[selected.y + 1]).not.toContain("feature-long")
+    }
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test("test renderer can paint text", async () => {
   const setup = await testRender(() => (
     <box>
