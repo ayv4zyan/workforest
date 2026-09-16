@@ -33,7 +33,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "pane-actions"
 type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
-type ModalFocus = "input" | "submit" | "cancel"
+type ModalFocus = "input" | "rename-folder" | "submit" | "cancel"
 type Action = {
   id: string
   label: string
@@ -52,7 +52,7 @@ type Modal =
   | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
-  | { kind: "rename"; value: string; error?: string; target?: { project: Project; tree: GitWorktree } }
+  | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
   | { kind: "stop"; rows: ServerRow[] }
@@ -398,6 +398,7 @@ export function App() {
   function modalFocusables(): ModalFocus[] {
     const current = modal()
     if (!current) return []
+    if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
 
@@ -414,6 +415,12 @@ export function App() {
     if (!current) return
     const hasInput = "value" in current
     const focus = modalFocus()
+
+    if (current.kind === "rename" && (name === "up" || name === "down")) {
+      preventDefault()
+      cycleModalFocus(name === "up" ? -1 : 1)
+      return
+    }
 
     if (hasInput && focus === "input") {
       if (name === "down") {
@@ -432,6 +439,10 @@ export function App() {
       if (focus === "submit") setModalFocus("cancel")
       else if (focus === "cancel") setModalFocus("submit")
     }
+  }
+
+  function toggleRenameFolder() {
+    setModal((current) => current?.kind === "rename" ? { ...current, renameFolder: !current.renameFolder, error: undefined } : current)
   }
 
   function openAddProject() {
@@ -606,6 +617,11 @@ export function App() {
         handleModalArrow(key.name, () => key.preventDefault())
         return
       }
+      if (modalFocus() === "rename-folder" && ["space", "return", "enter"].includes(key.name)) {
+        key.preventDefault()
+        toggleRenameFolder()
+        return
+      }
       if (key.name === "return" || key.name === "enter") {
         if (modalFocus() === "cancel") {
           key.preventDefault()
@@ -760,11 +776,14 @@ export function App() {
           repoPath: project.path,
           tree,
           newName: value,
+          renameFolder: current.renameFolder,
           home: dataDir(),
           projectId: project.id,
         })
-        moveRunRecord(dataDir(), project.id, tree.path, renamed.path)
-        movePort(dataDir(), tree.path, renamed.path)
+        if (renamed.path !== tree.path) {
+          moveRunRecord(dataDir(), project.id, tree.path, renamed.path)
+          movePort(dataDir(), tree.path, renamed.path)
+        }
         setSelectedTreePath(renamed.path)
         setModal(null)
         refresh()
@@ -885,7 +904,7 @@ export function App() {
       case "new-tree":
         return "Name is used for the directory and the branch"
       case "rename":
-        return "Renames the directory and the branch"
+        return "Renames the branch. Renaming the folder changes its path; apps using this worktree may need to reopen it."
       case "delete": {
         const tree = selectedTree()
         const extra = tree?.dirty ? " Working tree is dirty; this force-deletes." : ""
@@ -930,7 +949,7 @@ export function App() {
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
-      : "value" in current ? 14 : 12
+      : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
     return {
@@ -1238,6 +1257,7 @@ export function App() {
         {(current: () => Modal) => (
           <box
             position="absolute"
+            id="modal-dialog"
             left={modalSize(current()).left}
             top={modalSize(current()).top}
             width={modalSize(current()).width}
@@ -1296,6 +1316,18 @@ export function App() {
                     }}
                   />
                 ) : null}
+                <Show when={current().kind === "rename"}>
+                  <ActionButton
+                    id="btn-rename-folder"
+                    compact
+                    label={`${(current() as Extract<Modal, { kind: "rename" }>).renameFolder ? "[x]" : "[ ]"} Also rename worktree folder`}
+                    active={modalFocus() === "rename-folder"}
+                    onPress={() => {
+                      setModalFocus("rename-folder")
+                      toggleRenameFolder()
+                    }}
+                  />
+                </Show>
                 <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
                 <box flexDirection="row" justifyContent="flex-end" gap={1}>
                   <ActionButton

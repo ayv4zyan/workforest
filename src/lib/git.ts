@@ -132,13 +132,15 @@ export function renameWorktree(opts: {
   repoPath: string
   tree: GitWorktree
   newName: string
+  renameFolder?: boolean
   home: string
   projectId: string
 }): { path: string; branch: string | null } {
   const { repoPath, tree, newName } = opts
   if (tree.isMain) throw new Error("Cannot rename the main worktree")
   validateName(repoPath, newName)
-  const dest = join(dirname(tree.path), basename(newName))
+  if (!tree.branch && !opts.renameFolder) throw new Error("Detached worktree has no branch to rename")
+  const dest = opts.renameFolder ? join(dirname(tree.path), basename(newName)) : tree.path
   if (!samePath(tree.path, dest) && existsSync(dest)) {
     throw new Error(`Worktree destination already exists at ${dest}`)
   }
@@ -152,7 +154,7 @@ export function renameWorktree(opts: {
     mkdirSync(dirname(dest), { recursive: true })
     gitOk(repoPath, ["worktree", "move", tree.path, dest])
   }
-  return { path: dest, branch: newName }
+  return { path: dest, branch: tree.branch ? newName : null }
 }
 
 export function removeWorktree(opts: { repoPath: string; tree: GitWorktree; force?: boolean }): void {

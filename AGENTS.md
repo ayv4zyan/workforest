@@ -4,7 +4,7 @@ TUI at `src/app.tsx`. Domain logic in `src/lib`. Data dir `~/.workforest` (overr
 
 - Config: `config.json` — projects you register by path. Main checkouts are never moved.
 - Linked worktrees: `trees/<project-id>/<name>/` via `git worktree add`.
-- Rename changes both the directory (`git worktree move`) and the branch (`git branch -m`).
+- Rename changes the branch (`git branch -m`) by default. Renaming the directory (`git worktree move`) is opt-in.
 - `node_modules` is symlinked from main when lockfiles match; otherwise `bun install`. `.env*` is copied.
 - Servers: owned (spawned from the TUI, pid files in `run/`) and discovered (`lsof` listeners whose cwd is a worktree).
 

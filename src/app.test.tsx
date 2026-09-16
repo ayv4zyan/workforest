@@ -377,7 +377,7 @@ test("modal left and right stay in the path field", async () => {
 
 
 
-test("auto-rename mouse action suggests a name and submit renames branch and directory", async () => {
+test("auto-rename defaults to branch only and folder rename is opt-in", async () => {
   const root = mkdtempSync(join(tmpdir(), "wf-auto-ui-"))
   const oldHome = process.env.WORKFOREST_HOME
   const oldPath = process.env.PATH
@@ -447,7 +447,24 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     await click("btn-submit")
     const renamed = listWorktrees(repo)[1]!
     expect(renamed.branch).toBe("agent/fix-login-flow")
-    expect(renamed.path).toBe(join(tree.path, "..", "fix-login-flow"))
+    expect(renamed.path).toBe(tree.path)
+    await setup.mockInput.typeText("m")
+    await paint(setup)
+    await click("btn-rename")
+    await click("btn-manual-rename")
+    expect(setup.captureCharFrame()).toContain("[ ] Also rename worktree folder")
+    await click("btn-rename-folder")
+    expect(setup.captureCharFrame()).toContain("[x] Also rename worktree folder")
+    const dialog = findById(setup.renderer.root, "modal-dialog")!
+    const checkbox = findById(setup.renderer.root, "btn-rename-folder")!
+    expect(checkbox.height).toBe(1)
+    for (const id of ["btn-submit", "btn-cancel"]) {
+      const button = findById(setup.renderer.root, id)!
+      expect(button.y).toBeGreaterThan(checkbox.y)
+      expect(button.y + button.height).toBeLessThan(dialog.y + dialog.height - 1)
+    }
+    await click("btn-submit")
+    expect(listWorktrees(repo)[1]!.path).toBe(join(tree.path, "..", "fix-login-flow"))
   } finally {
     setup.renderer.destroy()
     process.env.PATH = oldPath
