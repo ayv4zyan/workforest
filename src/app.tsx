@@ -83,6 +83,8 @@ export function App() {
   let projectList: BoxRenderable | undefined
   let treeList: BoxRenderable | undefined
   const [pane, setPane] = createSignal<Pane>("projects")
+  const [searchEditing, setSearchEditing] = createSignal(false)
+  const [queries, setQueries] = createSignal<Record<Pane, string>>({ projects: "", trees: "" })
   const [focusRow, setFocusRow] = createSignal<FocusRow>("panes")
   const [headerIndex, setHeaderIndex] = createSignal(0)
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
@@ -124,6 +126,42 @@ export function App() {
     }
   }
 
+  const matches = (query: string, name: string) =>
+    name.toLowerCase().includes(query.toLowerCase())
+  const filteredProjects = createMemo(() => projects().filter((project) => matches(queries().projects, project.name)))
+  const filteredTrees = createMemo(() => trees().filter((tree) => matches(queries().trees, tree.displayName)))
+
+  function openSearch() {
+    if (modal() || menu()) return
+    setFocusRow("panes")
+    setSearchEditing(true)
+  }
+
+  function clearSearch() {
+    setQueries((current) => ({ ...current, [pane()]: "" }))
+    setSearchEditing(false)
+    setFocusRow("panes")
+  }
+
+  createEffect(() => {
+    const rows = filteredProjects()
+    if (rows.some((row) => row.id === selectedProjectId())) return
+    const next = rows[0]?.id ?? null
+    setSelectedProjectId(next)
+    if (next) loadTreesFor(next)
+    else {
+      setTrees([])
+      setSelectedTreePath(null)
+    }
+  })
+
+  createEffect(() => {
+    const rows = filteredTrees()
+    if (!queries().trees) return
+    setFocusedGroup(null)
+    if (!rows.some((row) => row.path === selectedTreePath())) setSelectedTreePath(rows[0]?.path ?? null)
+  })
+
   const selectedProject = () => projects().find((project) => project.id === selectedProjectId()) ?? null
   const selectedTree = () => focusedGroup() ? null : trees().find((tree) => tree.path === selectedTreePath()) ?? null
   const treeServers = () => {
@@ -132,7 +170,7 @@ export function App() {
   }
   const activeServers = () => treeServers().filter((row) => row.state !== "failed")
   const groupedTrees = createMemo(() => {
-    const sorted = [...trees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
+    const sorted = [...filteredTrees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
     const running: TreeRow[] = []
     const stopped: TreeRow[] = []
     for (const tree of sorted) {
@@ -145,8 +183,9 @@ export function App() {
   const treeEntries = createMemo<TreeEntry[]>(() => {
     const entries: TreeEntry[] = []
     for (const group of ["running", "stopped"] as const) {
+      if (queries().trees && !groupedTrees()[group].length) continue
       entries.push({ kind: "group", group, count: groupedTrees()[group].length })
-      if (!collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
+      if (queries().trees || !collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
     }
     return entries
   })
@@ -288,6 +327,7 @@ export function App() {
   }
 
   function focusPane(next: Pane) {
+    setSearchEditing(false)
     setPane(next)
     setFocusRow("panes")
   }
@@ -300,8 +340,8 @@ export function App() {
 
   function movePaneSelection(delta: number) {
     if (pane() === "projects") {
-      const next = Math.max(0, Math.min(projectIndex() + delta, projects().length - 1))
-      const project = projects()[next]
+      const next = Math.max(0, Math.min(projectIndex() + delta, filteredProjects().length - 1))
+      const project = filteredProjects()[next]
       if (!project || project.id === selectedProjectId()) return
       setSelectedProjectId(project.id)
       loadTreesFor(project.id)
@@ -371,7 +411,7 @@ export function App() {
     focusPane(target)
     const list = target === "projects" ? projectList : treeList
     const row = target === "projects"
-      ? selectedRowTop(projectIndex(), projects().length, projectListHeight(), 1)
+      ? selectedRowTop(projectIndex(), filteredProjects().length, projectListHeight(), 1)
       : selectedRowTop(treeIndex(), treeEntries().length, treeListHeight() - 1, 1)
     setMenuIndex(0)
     setSubmenuIndex(0)
@@ -681,6 +721,26 @@ export function App() {
       }
       return
     }
+    if (searchEditing()) {
+      if (key.name === "escape") {
+        key.preventDefault()
+        clearSearch()
+      } else if (key.name === "return" || key.name === "enter") {
+        key.preventDefault()
+        setSearchEditing(false)
+      }
+      return
+    }
+    if (key.name === "/" || key.sequence === "/") {
+      key.preventDefault()
+      openSearch()
+      return
+    }
+    if (key.name === "escape" && queries()[pane()]) {
+      key.preventDefault()
+      clearSearch()
+      return
+    }
     if (key.name === "q") {
       quit()
       return
@@ -920,7 +980,7 @@ export function App() {
     showModal({ kind: "start", value: String(port), project, tree })
   }
 
-  const projectIndex = () => Math.max(0, projects().findIndex((project) => project.id === selectedProjectId()))
+  const projectIndex = () => Math.max(0, filteredProjects().findIndex((project) => project.id === selectedProjectId()))
   const treeIndex = () => Math.max(0, treeEntries().findIndex((entry) => entry.kind === "group" ? entry.group === focusedGroup() : !focusedGroup() && entry.tree.path === selectedTreePath()))
 
   function modalTitle(current: Modal): string {
@@ -1079,18 +1139,18 @@ export function App() {
               <ActionButton id="btn-add" label="+" compact disabled={busy()}
                 active={pane() === "projects" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("projects"); openAddProject() }} />
-              <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${projects().length})`}</text>
+              <text fg={pane() === "projects" ? theme.accent : theme.muted} selectable={false}>{`projects (${filteredProjects().length})${queries().projects ? ` /${queries().projects}` : ""}`}</text>
             </box>
             <Show
-              when={projects().length > 0}
+              when={filteredProjects().length > 0}
               fallback={
                 <box
                   onMouseDown={(event) => {
                     event.stopPropagation()
-                    openAddProject()
+                    if (!queries().projects) openAddProject()
                   }}
                 >
-                  <text fg={theme.muted} selectable={false}>no projects</text>
+                  <text fg={theme.muted} selectable={false}>{queries().projects ? "no matching projects" : "no projects"}</text>
                 </box>
               }
             >
@@ -1105,15 +1165,15 @@ export function App() {
                   overflow="hidden"
                   onMouseScroll={(event) => {
                     focusPane("projects")
-                    wheelSelect(event, projectIndex(), projects().length, (index) => {
-                      const project = projects()[index]
+                    wheelSelect(event, projectIndex(), filteredProjects().length, (index) => {
+                      const project = filteredProjects()[index]
                       if (!project) return
                       setSelectedProjectId(project.id)
                       loadTreesFor(project.id)
                     })
                   }}
                 >
-                  <For each={visibleRows(projects(), projectIndex(), projectListHeight(), 1)}>{({ row: project, index }) => {
+                  <For each={visibleRows(filteredProjects(), projectIndex(), projectListHeight(), 1)}>{({ row: project, index }) => {
                     const selected = () => index === projectIndex()
                     return <box height={1} flexShrink={0} overflow="hidden"
                       backgroundColor={selected()
@@ -1192,11 +1252,11 @@ export function App() {
               <ActionButton id="btn-new" label="+" compact disabled={!selectedProject() || busy()}
                 active={pane() === "trees" && focusRow() === "pane-actions"}
                 onPress={() => { focusPane("trees"); openNewTree() }} />
-              <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${trees().length})`}</text>
+              <text fg={pane() === "trees" ? theme.accent : theme.muted} selectable={false}>{`worktrees (${filteredTrees().length})${queries().trees ? ` /${queries().trees}` : ""}`}</text>
             </box>
             <Show
-              when={trees().length > 0}
-              fallback={<text fg={theme.muted} selectable={false}>no worktrees</text>}
+              when={filteredTrees().length > 0}
+              fallback={<text fg={theme.muted} selectable={false}>{queries().trees ? "no matching worktrees" : "no worktrees"}</text>}
             >
               <box flexGrow={1} flexDirection="row" ref={(node) => {
                 node.onSizeChange = () => setTreeListHeight(node.height)
@@ -1257,6 +1317,27 @@ export function App() {
             </Show>
           </box>
 
+      </box>
+
+      <box height={1} flexShrink={0} paddingLeft={1} paddingRight={1} flexDirection="row" gap={1}>
+        <Show when={searchEditing() || queries()[pane()]} fallback={
+          <ActionButton id="btn-search" label="/ search" compact onPress={openSearch} />
+        }>
+          <text fg={theme.muted} selectable={false}>{pane() === "projects" ? "Search projects" : "Search worktrees"}</text>
+          <text fg={theme.accent} selectable={false}>/</text>
+          <input
+            id="search-input"
+            flexGrow={1}
+            focused={searchEditing() && !modal() && !menu()}
+            value={queries()[pane()]}
+            backgroundColor={theme.bg}
+            textColor={theme.text}
+            cursorColor={theme.accent}
+            onMouseDown={openSearch}
+            onInput={(value) => setQueries((current) => ({ ...current, [pane()]: value }))}
+          />
+          <ActionButton id="btn-search-clear" label="Esc clear" compact onPress={clearSearch} />
+        </Show>
       </box>
 
       <Show when={status()}>

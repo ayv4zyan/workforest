@@ -18,6 +18,7 @@ Every action has a click target. Keyboard shortcuts still work.
 - Click **refresh** / **quit** in the header.
 - Click a list row to select it. Click the same row again to activate it (open trees or start/stop).
 - Scroll the wheel over a list to move the selection.
+- Click **/ search** at the bottom to filter the focused pane. Click **Esc clear** to clear its filter.
 - The two panes are **projects** and **worktrees**. Each worktree shows its server status and port inline.
 - Click **+** in the projects header to register a project, or in the worktrees header to create a worktree.
 - Right-click a row or click its **⋯** button for actions: projects offer **Edit start command** and **Remove from list**; worktrees offer **Rename** and **Delete** (disabled for the main checkout).
@@ -35,6 +36,7 @@ Arrow keys move between the header, panes, and pane controls (`+` / `⋯`). In r
 | `←` / `→` | Previous / next pane, header button, pane control, or dialog button. In a dialog text field, move the cursor |
 | `↓` | Header → panes → pane controls. In a dialog, the text field → submit |
 | `↑` | Pane controls → panes → header. In a dialog, buttons → text field |
+| `/` | Search the focused pane by displayed name; Enter keeps the filter, Esc clears it |
 | `a` | Register a project (path to the main checkout) |
 | `n` | New worktree (directory name = branch name) |
 | `r` | Open rename choices: manual or auto |
@@ -47,6 +49,8 @@ Arrow keys move between the header, panes, and pane controls (`+` / `⋯`). In r
 | `j` / `k` | Move down / up in the focused list |
 | `g` | Refresh |
 | `q` | Quit |
+
+Search matches displayed names as you type, ignoring case. Directory paths are not searched. Each pane keeps its own filter, shown beside its title; click the bottom input or press `/` to edit it again.
 
 On create, Workforest copies `.env*` files and symlinks `node_modules` from the main checkout when lockfiles match. If they do not match, it runs `bun install` in the new tree.
 
