@@ -1058,7 +1058,6 @@ export function App() {
     const terminalHeight = dimensions().height
     const preferredWidth = current.kind === "logs"
       ? terminalWidth - 16
-      : current.kind === "stop" ? 116
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
