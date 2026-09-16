@@ -7,9 +7,9 @@ Registered projects stay where they are. Linked worktrees live under
 
 ![Main UI — projects and worktrees with server status](docs/images/main-ui.png)
 
-<!-- Optional: short loop GIF once recorded
-![Create a worktree, start the server](docs/images/create-and-start.gif)
--->
+![Start server — port dialog](docs/images/start-port.png)
+
+![Server logs — live Bun output](docs/images/server-logs.png)
 
 ## Quick start
 
