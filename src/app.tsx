@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import type { BoxRenderable, MouseEvent } from "@opentui/core"
+import type { BoxRenderable, InputRenderable, MouseEvent } from "@opentui/core"
+import { completePath, type PathSuggestion } from "./lib/path-completion.ts"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
 import { theme } from "./theme.ts"
 import { nextIndex } from "./lib/select-hit.ts"
@@ -100,6 +101,40 @@ export function App() {
   let renameRequest: AbortController | undefined
   onCleanup(() => renameRequest?.abort())
   const [modal, setModal] = createSignal<Modal | null>(null)
+  const [pathSuggestions, setPathSuggestions] = createSignal<PathSuggestion[]>([])
+  const [pathIndex, setPathIndex] = createSignal(-1)
+  let modalInput: InputRenderable | undefined
+  const completionValue = createMemo(() => {
+    const current = modal()
+    return current?.kind === "add-project" ? current.value : null
+  })
+  createEffect(() => {
+    const value = completionValue()
+    setPathSuggestions([])
+    setPathIndex(-1)
+    if (value === null) return
+    const request = new AbortController()
+    const timer = setTimeout(async () => {
+      const suggestions = await completePath(value, request.signal)
+      if (!request.signal.aborted) setPathSuggestions(suggestions)
+    }, 60)
+    onCleanup(() => { clearTimeout(timer); request.abort() })
+  })
+  // Reserve the same suggestion space even while loading or showing no matches.
+  const pathListHeight = () => Math.min(4, Math.max(1, dimensions().height - 14))
+  const visiblePaths = () => {
+    const start = Math.max(0, pathIndex() - pathListHeight() + 1)
+    return pathSuggestions().slice(start, start + pathListHeight()).map((row, index) => ({ ...row, index: start + index }))
+  }
+  function applyPath(index = Math.max(0, pathIndex())) {
+    const suggestion = pathSuggestions()[index]
+    const current = modal()
+    if (!suggestion || current?.kind !== "add-project") return
+    setModal({ ...current, value: suggestion.value, error: undefined })
+    setPathIndex(-1)
+    setModalFocus("input")
+    if (modalInput) modalInput.cursorOffset = suggestion.value.length
+  }
   const [projectPaneWidth, setProjectPaneWidthState] = createSignal(defaultProjectPaneWidth)
   const [hoveredProjectIndex, setHoveredProjectIndex] = createSignal<number | null>(null)
   const [hoveredTreeIndex, setHoveredTreeIndex] = createSignal<number | null>(null)
@@ -696,6 +731,25 @@ export function App() {
         cancelModal()
         return
       }
+      if (modal()?.kind === "add-project" && modalFocus() === "input" && pathSuggestions().length) {
+        if ((key.name === "tab" && !key.shift) || (key.name === "right" && modalInput?.cursorOffset === modalInput?.value.length)) {
+          key.preventDefault()
+          applyPath()
+          return
+        }
+        if (key.name === "down" || key.name === "up") {
+          key.preventDefault()
+          const next = pathIndex() + (key.name === "down" ? 1 : -1)
+          if (next >= pathSuggestions().length) { setPathIndex(-1); setModalFocus("submit") }
+          else setPathIndex(Math.max(-1, next))
+          return
+        }
+        if (["return", "enter"].includes(key.name) && pathIndex() >= 0) {
+          key.preventDefault()
+          applyPath()
+          return
+        }
+      }
       if (key.name === "tab") {
         key.preventDefault()
         cycleModalFocus(key.shift ? -1 : 1)
@@ -1061,7 +1115,7 @@ export function App() {
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
-      : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
+      : current.kind === "add-project" ? 12 + pathListHeight() : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
     return {
@@ -1413,11 +1467,11 @@ export function App() {
             backgroundColor={theme.header}
             padding={1}
             flexDirection="column"
-            gap={1}
+            gap={current().kind === "add-project" ? 0 : 1}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <Show when={current().kind !== "logs"}>
-              <text height={2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
+              <text height={current().kind === "add-project" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
             </Show>
             {current().kind === "logs" ? (
               <>
@@ -1440,6 +1494,7 @@ export function App() {
                 {"value" in current() ? (
                   <input
                     id="modal-input"
+                    ref={(node) => { modalInput = node }}
                     focused={modalFocus() === "input"}
                     value={modalValue(current())}
                     placeholder={modalPlaceholder(current())}
@@ -1459,6 +1514,28 @@ export function App() {
                     }}
                   />
                 ) : null}
+                <Show when={current().kind === "add-project"}>
+                  <box flexDirection="column" height={pathListHeight() + 2} flexShrink={0}>
+                    <box height={pathListHeight()} flexShrink={0} flexDirection="column">
+                      <Show when={!completionValue()?.trim()}>
+                        <text height={1} fg={theme.muted} selectable={false}>Type a path to see matching directories.</text>
+                      </Show>
+                      <For each={visiblePaths()}>{(row) => (
+                        <box id={`path-suggestion-${row.index}`} height={1} flexShrink={0}
+                          backgroundColor={pathIndex() === row.index ? theme.selectedBg : theme.panel}
+                          onMouseDown={(event) => { if (event.button === 0) applyPath(row.index) }}
+                          onMouseScroll={(event) => {
+                            setPathIndex(Math.max(0, Math.min(pathSuggestions().length - 1, pathIndex() + (event.scroll?.direction === "up" ? -1 : 1))))
+                            setModalFocus("input")
+                          }}>
+                          <text truncate fg={pathIndex() === row.index ? theme.selectedFg : theme.text} selectable={false}>{`${pathIndex() === row.index ? "▶" : " "} ${row.name}/`}</text>
+                        </box>
+                      )}</For>
+                    </box>
+                    <text height={1} fg={theme.muted} selectable={false}>Tab / → complete · ↑↓ choose · Enter pick / submit</text>
+                    <text height={1} fg={theme.muted} selectable={false}>{!completionValue()?.trim() ? "Absolute, relative and ~/ paths" : pathSuggestions().length ? `${pathSuggestions().length}${pathSuggestions().length === 20 ? "+" : ""} directories · type to narrow` : "No matching directories"}</text>
+                  </box>
+                </Show>
                 <Show when={current().kind === "rename"}>
                   <ActionButton
                     id="btn-rename-folder"

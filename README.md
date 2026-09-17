@@ -71,6 +71,8 @@ Two panes: **projects** and **worktrees**. Mouse-first (click, double-click to a
 
 Search matches displayed names as you type (case-insensitive). Paths are not searched. Each pane keeps its own filter beside the title.
 
+Adding a project offers live directory suggestions for absolute, relative, and `~/` paths. **Tab** or **→** at the end of the field completes a segment; **↑/↓** highlights a suggestion and **Enter** applies it. Click a suggestion to apply it, or use the wheel to move the highlight. Press **Enter** again (or click **submit**) to register the path through Git validation. **Shift+Tab** reaches the dialog buttons. Suggestions are capped at 20, omit files and common noise directories, and show hidden directories only when the segment starts with `.`.
+
 ## vs alternatives
 
 | | `git worktree` CLI | Typical worktree TUI | IDE worktree UI | Workforest |

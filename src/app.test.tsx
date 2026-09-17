@@ -569,7 +569,8 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port} · external`)
     await click("btn-start")
-    expect(setup.captureCharFrame()).toContain("External processes were started outside Workforest")
+    expect(setup.captureCharFrame()).toContain("External processes were started")
+    expect(setup.captureCharFrame()).toContain("outside Workforest.")
     await click("btn-cancel")
     expect(external.exitCode).toBeNull()
     await click("btn-start")
@@ -918,6 +919,130 @@ test("bottom search filters projects and worktrees without firing shortcuts", as
     setup.mockInput.pressEscape()
     await paint(setup)
     expect(setup.captureCharFrame()).toContain("alpha-project")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("add project completes with keyboard and mouse, then validates the chosen path", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-complete-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  process.env.WORKFOREST_HOME = join(root, "home")
+  mkdirSync(join(root, "workforest"))
+  mkdirSync(join(root, "workshop"))
+  gitOk(join(root, "workforest"), ["init", "-b", "main"])
+  const setup = await testRender(() => <App />, { width: 100, height: 28 })
+  const waitForPaths = async () => { await Bun.sleep(100); await paint(setup) }
+  try {
+    await paint(setup)
+    await openAddProjectModal(setup)
+    await setup.mockInput.typeText(`${root}/wor`)
+    await waitForPaths()
+    expect(setup.captureCharFrame()).toContain("workforest/")
+    expect(setup.captureCharFrame()).toContain("workshop/")
+    for (const height of [28, 18]) {
+      setup.renderer.resize(100, height)
+      await paint(setup)
+      const dialog = findById(setup.renderer.root, "modal-dialog")!
+      const submit = findById(setup.renderer.root, "btn-submit")!
+      expect(submit.y + submit.height).toBeLessThan(dialog.y + dialog.height - 1)
+    }
+    setup.renderer.resize(100, 28)
+    await paint(setup)
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("▶ workforest/")
+    setup.mockInput.pressEnter()
+    await waitForPaths()
+    expect(loadConfig(process.env.WORKFOREST_HOME).projects).toHaveLength(0)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(loadConfig(process.env.WORKFOREST_HOME).projects[0]?.path).toBe(join(root, "workforest"))
+    expect(findById(setup.renderer.root, "modal-input")).toBeUndefined()
+
+    await openAddProjectModal(setup)
+    await setup.mockInput.typeText(`${root}/wor`)
+    await waitForPaths()
+    const row = findById(setup.renderer.root, "path-suggestion-1")!
+    await setup.mockMouse.click(row.x + 3, row.y)
+    await waitForPaths()
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("Not a git repository")
+    expect(loadConfig(process.env.WORKFOREST_HOME).projects).toHaveLength(1)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+
+    for (const key of ["tab", "right"]) {
+      await openAddProjectModal(setup)
+      await setup.mockInput.typeText(`${root}/workf`)
+      await waitForPaths()
+      if (key === "right") setup.mockInput.pressArrow("right")
+      else setup.mockInput.pressTab()
+      await waitForPaths()
+      const input = findById(setup.renderer.root, "modal-input") as import("@opentui/core").InputRenderable
+      expect(input.value).toBe(`${root}/workforest/`)
+      expect(input.cursorOffset).toBe(input.value.length)
+      setup.mockInput.pressEscape()
+      await paint(setup)
+    }
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test("add project keeps the dialog, input and buttons still while typing and deleting", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-completion-layout-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  process.env.WORKFOREST_HOME = join(root, "home")
+  for (const name of ["alpha", "alpine", "beta"]) mkdirSync(join(root, name))
+  const setup = await testRender(() => <App />, { width: 100, height: 28 })
+  const geometry = () => ["modal-dialog", "modal-input", "btn-submit", "btn-cancel"].map((id) => {
+    const node = findById(setup.renderer.root, id)!
+    return { x: node.x, y: node.y, width: node.width, height: node.height }
+  })
+  try {
+    await paint(setup)
+    for (const height of [28, 18]) {
+      setup.renderer.resize(100, height)
+      await paint(setup)
+      await openAddProjectModal(setup)
+      const initial = geometry()
+      expect(initial[0]!.height).toBeLessThanOrEqual(16)
+      expect(setup.captureCharFrame()).toContain("Type a path to see matching directories.")
+      expect(setup.captureCharFrame()).not.toContain("0 directories")
+      const dialog = findById(setup.renderer.root, "modal-dialog")!
+      const submit = findById(setup.renderer.root, "btn-submit")!
+      expect(submit.y + submit.height).toBeLessThan(dialog.y + dialog.height - 1)
+      const assertStable = async () => {
+        await paint(setup)
+        expect(geometry()).toEqual(initial)
+        await Bun.sleep(100)
+        await paint(setup)
+        expect(geometry()).toEqual(initial)
+      }
+      await setup.mockInput.typeText(`${root}/`)
+      await assertStable()
+      expect(findById(setup.renderer.root, "path-suggestion-0")).toBeTruthy()
+      for (const text of ["a", "l", "!"]) {
+        await setup.mockInput.typeText(text)
+        await assertStable()
+      }
+      expect(findById(setup.renderer.root, "path-suggestion-0")).toBeUndefined()
+      for (let i = 0; i < 3; i++) {
+        setup.mockInput.pressBackspace()
+        await assertStable()
+      }
+      for (let i = 0; i < `${root}/`.length; i++) setup.mockInput.pressBackspace()
+      await assertStable()
+      expect((findById(setup.renderer.root, "modal-input") as import("@opentui/core").InputRenderable).value).toBe("")
+      setup.mockInput.pressEscape()
+      await paint(setup)
+    }
   } finally {
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
