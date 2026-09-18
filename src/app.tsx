@@ -398,7 +398,7 @@ export function App() {
       { id: "btn-logs", label: "logs", disabled: !treeServers().some((row) => row.logPath), onPress: openLogs },
     ] : []
     return [
-      { id: "btn-refresh", label: "refresh", onPress: () => refresh() },
+      { id: "btn-refresh", label: "↻", onPress: () => refresh() },
       ...serverActions,
       { id: "btn-quit", label: "quit", onPress: quit },
     ]

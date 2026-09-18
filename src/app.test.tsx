@@ -145,7 +145,7 @@ test("renders the workforest shell with clickable controls", async () => {
     expect(frame).not.toContain("servers (0)")
     expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
     expect(findById(setup.renderer.root, "footer-actions")).toBeUndefined()
-    expect(frame).toContain("refresh")
+    expect(frame).toContain("↻")
     expect(frame).toContain("quit")
     expect(frame).not.toContain("detail")
     expect(frame).not.toContain("kill")
@@ -271,7 +271,7 @@ test("pane add buttons remain visible when focus changes", async () => {
     expect(frame).not.toContain("servers")
     expect(findById(setup.renderer.root, "btn-start")).toBeUndefined()
     expect(findById(setup.renderer.root, "btn-logs")).toBeUndefined()
-    expect(frame).toContain("refresh")
+    expect(frame).toContain("↻")
     expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
   } finally {
     setup.renderer.destroy()
