@@ -6,12 +6,20 @@ export type Project = {
   startCommand?: string
 }
 
+export type AutoRenameConfig = {
+  provider: "codex"
+  model: string
+  reasoning: string
+  prompt: string
+}
+
 export type Config = {
   version: 1
   projects: Project[]
   ui?: {
     projectPaneWidth?: number
   }
+  autoRename?: AutoRenameConfig
 }
 
 export type GitWorktree = {

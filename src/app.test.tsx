@@ -133,6 +133,36 @@ test("ActionButton click fires onPress", async () => {
   }
 })
 
+test("an open settings dropdown switches and selects on one click", async () => {
+  process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-settings-click-"))
+  const setup = await testRender(() => <App />, { width: 110, height: 36 })
+  try {
+    await paint(setup)
+    const gear = findText(setup.captureCharFrame(), "⚙")
+    await setup.mockMouse.click(gear.x, gear.y)
+    await paint(setup)
+    const model = findById(setup.renderer.root, "settings-model")!
+    await setup.mockMouse.click(model.x + 4, model.y + 1)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "settings-menu-model")).toBeTruthy()
+    const provider = findById(setup.renderer.root, "settings-provider")!
+    await setup.mockMouse.click(provider.x + 4, provider.y + 1)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "settings-menu-provider")).toBeTruthy()
+    expect(findById(setup.renderer.root, "settings-menu-model")).toBeUndefined()
+    const reasoning = findById(setup.renderer.root, "settings-reasoning")!
+    await setup.mockMouse.click(reasoning.x + 4, reasoning.y + 1)
+    await paint(setup)
+    const menu = findById(setup.renderer.root, "settings-menu-reasoning")!
+    await setup.mockMouse.click(menu.x + 6, menu.y + 1)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "settings-menu-reasoning")).toBeUndefined()
+    expect(setup.captureCharFrame().split("\n")[reasoning.y + 1]).toContain("Low")
+  } finally {
+    setup.renderer.destroy()
+  }
+})
+
 test("renders the workforest shell with clickable controls", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
@@ -146,7 +176,7 @@ test("renders the workforest shell with clickable controls", async () => {
     expect(findById(setup.renderer.root, "btn-add")).toBeTruthy()
     expect(findById(setup.renderer.root, "footer-actions")).toBeUndefined()
     expect(frame).toContain("↻")
-    expect(frame).toContain("quit")
+    expect(frame).toContain("✕")
     expect(frame).not.toContain("detail")
     expect(frame).not.toContain("kill")
     expect(frame).not.toContain("project(s)")

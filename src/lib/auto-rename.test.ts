@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { renameContext, parseSuggestedName, suggestWorktreeName } from "./auto-rename.ts"
+import { defaultRenamePrompt } from "./auto-rename-settings.ts"
 import { createWorktree, gitOk, listWorktrees } from "./git.ts"
 
 const dirs: string[] = []
@@ -94,6 +95,42 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
   expect(request.prompt).toContain("must start with agent/")
   expect(request.cwd).not.toBe(tree.path)
   expect(listWorktrees(repo)[1]?.branch).toBe("old-name")
+})
+
+test("configured model, reasoning, and prompt replace the built-in defaults", async () => {
+  const { repo, tree } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "ship settings\n")
+  const capture = join(temp(), "request.json")
+  fakeCodex(`
+const args = process.argv.slice(2)
+const prompt = await Bun.stdin.text()
+await Bun.write(${JSON.stringify(capture)}, JSON.stringify({ args, prompt }))
+await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({ name: 'agent/ship-settings' }))
+`)
+  expect(await suggestWorktreeName(repo, tree, undefined, {
+    provider: "codex", model: "gpt-5.6-luna", reasoning: "ultra", prompt: "Name only the purpose.",
+  })).toBe("agent/ship-settings")
+  const request = JSON.parse(readFileSync(capture, "utf8"))
+  expect(request.args).toContain("gpt-5.6-luna")
+  expect(request.args).toContain('model_reasoning_effort="high"')
+  expect(request.prompt.startsWith("Name only the purpose.\n")).toBe(true)
+  expect(request.prompt).toContain("ship settings")
+  expect(request.prompt).not.toContain(defaultRenamePrompt.slice(0, 40))
+})
+
+test("an empty prompt falls back to the built-in instructions", async () => {
+  const { repo, tree } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "fallback prompt\n")
+  const capture = join(temp(), "request.json")
+  fakeCodex(`
+const args = process.argv.slice(2)
+const prompt = await Bun.stdin.text()
+await Bun.write(${JSON.stringify(capture)}, JSON.stringify({ prompt }))
+await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify({ name: 'agent/fallback-prompt' }))
+`)
+  await suggestWorktreeName(repo, tree, undefined, { provider: "codex", model: "gpt-5.6-sol", reasoning: "max", prompt: "   " })
+  const request = JSON.parse(readFileSync(capture, "utf8"))
+  expect(request.prompt.startsWith(defaultRenamePrompt)).toBe(true)
 })
 
 test("Codex failure is surfaced", async () => {

@@ -3,9 +3,11 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { BoxRenderable, InputRenderable, MouseEvent } from "@opentui/core"
 import { completePath, type PathSuggestion } from "./lib/path-completion.ts"
 import { suggestWorktreeName } from "./lib/auto-rename.ts"
+import { loadAutoRename, reasoningChoices, renameModels, resolveReasoning, saveAutoRename } from "./lib/auto-rename-settings.ts"
 import { theme } from "./theme.ts"
 import { nextIndex } from "./lib/select-hit.ts"
 import { ActionButton } from "./ui/button.tsx"
+import { SettingsForm, settingsFocusOrder, type SettingsField, type SettingsFocus } from "./ui/settings-modal.tsx"
 import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand } from "./lib/config.ts"
 import { setupWorktreeDeps } from "./lib/deps.ts"
 import {
@@ -34,7 +36,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "pane-actions"
 type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
-type ModalFocus = "input" | "rename-folder" | "submit" | "cancel"
+type ModalFocus = "input" | "rename-folder" | "submit" | "cancel" | SettingsFocus
 type Action = {
   id: string
   label: string
@@ -52,6 +54,7 @@ type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
 type TreeGroup = "running" | "stopped"
 type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 type Modal =
+  | { kind: "settings"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
   | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; error?: string }
@@ -101,6 +104,9 @@ export function App() {
   let renameRequest: AbortController | undefined
   onCleanup(() => renameRequest?.abort())
   const [modal, setModal] = createSignal<Modal | null>(null)
+  const [settingsOpen, setSettingsOpen] = createSignal<SettingsField | null>(null)
+  const [settingsHighlight, setSettingsHighlight] = createSignal(0)
+  let settingsPrompt = ""
   const [pathSuggestions, setPathSuggestions] = createSignal<PathSuggestion[]>([])
   const [pathIndex, setPathIndex] = createSignal(-1)
   let modalInput: InputRenderable | undefined
@@ -400,7 +406,8 @@ export function App() {
     return [
       { id: "btn-refresh", label: "↻", onPress: () => refresh() },
       ...serverActions,
-      { id: "btn-quit", label: "quit", onPress: quit },
+      { id: "btn-settings", label: "⚙", onPress: openSettings },
+      { id: "btn-quit", label: "✕", variant: "danger", onPress: quit },
     ]
   }
 
@@ -521,6 +528,7 @@ export function App() {
   function modalFocusables(): ModalFocus[] {
     const current = modal()
     if (!current) return []
+    if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))
     if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
@@ -566,6 +574,60 @@ export function App() {
 
   function toggleRenameFolder() {
     setModal((current) => current?.kind === "rename" ? { ...current, renameFolder: !current.renameFolder, error: undefined } : current)
+  }
+
+  function openSettings() {
+    const loaded = loadAutoRename(dataDir())
+    settingsPrompt = loaded.prompt
+    setSettingsOpen(null)
+    setSettingsHighlight(0)
+    setMenu(null)
+    setModal({ kind: "settings", ...loaded })
+    setModalFocus("provider")
+  }
+
+  function settingsOptions(field: SettingsField, current: Extract<Modal, { kind: "settings" }>): string[] {
+    if (field === "provider") return ["codex"]
+    if (field === "model") return [...renameModels]
+    return [...reasoningChoices(current.model)]
+  }
+
+  function toggleSettings(field: SettingsField) {
+    const current = modal()
+    if (current?.kind !== "settings") return
+    if (settingsOpen() === field) {
+      setSettingsOpen(null)
+      return
+    }
+    const options = settingsOptions(field, current)
+    const selected = field === "model" ? current.model : field === "reasoning" ? current.reasoning : "codex"
+    setSettingsHighlight(Math.max(0, options.indexOf(selected)))
+    setSettingsOpen(field)
+    setModalFocus(field)
+  }
+
+  function pickSettings(field: SettingsField, value: string) {
+    setModal((current) => {
+      if (current?.kind !== "settings") return current
+      if (field === "model") return { ...current, model: value, reasoning: resolveReasoning(value, current.reasoning), error: undefined }
+      if (field === "reasoning") return { ...current, reasoning: value, error: undefined }
+      return { ...current, error: undefined }
+    })
+    setSettingsOpen(null)
+  }
+
+  function saveSettings() {
+    const current = modal()
+    if (current?.kind !== "settings") return
+    try {
+      saveAutoRename(dataDir(), { provider: "codex", model: current.model, reasoning: current.reasoning, prompt: settingsPrompt })
+      setSettingsOpen(null)
+      setModal(null)
+      setStatus("saved auto-rename settings")
+    } catch {
+      setModal({ ...current, error: "Couldn't save settings" })
+      setModalFocus("retry")
+    }
   }
 
   function openAddProject() {
@@ -622,7 +684,7 @@ export function App() {
     setStatus("")
     showModal({ kind: "auto-rename" })
     try {
-      const name = await suggestWorktreeName(project.path, tree, request.signal)
+      const name = await suggestWorktreeName(project.path, tree, request.signal, loadAutoRename(dataDir()))
       request.signal.throwIfAborted()
       setSelectedProjectId(project.id)
       loadTreesFor(project.id)
@@ -715,6 +777,60 @@ export function App() {
       return
     }
     if (modal()) {
+      if (modal()?.kind === "settings") {
+        const open = settingsOpen()
+        const current = modal()
+        if (current?.kind !== "settings") return
+        const options = open === "provider"
+          ? ["codex"]
+          : open === "model"
+            ? [...renameModels]
+            : open === "reasoning"
+              ? [...reasoningChoices(current.model)]
+              : []
+        if (open) {
+          key.preventDefault()
+          if (key.name === "escape") setSettingsOpen(null)
+          else if (key.name === "up" || key.name === "down") {
+            const delta = key.name === "up" ? -1 : 1
+            setSettingsHighlight((settingsHighlight() + delta + options.length) % options.length)
+          } else if (["return", "enter"].includes(key.name)) {
+            const value = options[settingsHighlight()]
+            if (value) pickSettings(open, value)
+          }
+          return
+        }
+        if (modalFocus() === "prompt") {
+          if (key.name === "escape") {
+            key.preventDefault()
+            cancelModal()
+          } else if (key.name === "tab") {
+            key.preventDefault()
+            cycleModalFocus(key.shift ? -1 : 1)
+          }
+          return
+        }
+        key.preventDefault()
+        if (key.name === "escape") cancelModal()
+        else if (key.name === "tab" || key.name === "up" || key.name === "down") {
+          const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
+          cycleModalFocus(delta)
+        } else if (key.name === "left" || key.name === "right") {
+          const items = settingsFocusOrder(Boolean(current.error)).filter((item) => item === "retry" || item === "save" || item === "cancel")
+          const focus = modalFocus()
+          const index = items.findIndex((item) => item === focus)
+          if (index >= 0) {
+            const delta = key.name === "left" ? -1 : 1
+            setModalFocus(items[(index + delta + items.length) % items.length]!)
+          }
+        } else if (["return", "enter", "space"].includes(key.name)) {
+          const focus = modalFocus()
+          if (focus === "provider" || focus === "model" || focus === "reasoning") toggleSettings(focus)
+          else if (focus === "save" || focus === "retry") saveSettings()
+          else if (focus === "cancel") cancelModal()
+        }
+        return
+      }
       if (modal()?.kind === "auto-rename") {
         key.preventDefault()
         if (["escape", "enter", "return"].includes(key.name)) renameRequest?.abort()
@@ -1039,6 +1155,8 @@ export function App() {
 
   function modalTitle(current: Modal): string {
     switch (current.kind) {
+      case "settings":
+        return "Settings"
       case "auto-rename":
         return "auto rename"
       case "add-project":
@@ -1064,6 +1182,8 @@ export function App() {
 
   function modalBody(current: Modal): string {
     switch (current.kind) {
+      case "settings":
+        return ""
       case "auto-rename":
         return "Reviewing worktree changes. You can edit the suggested name before renaming."
       case "add-project":
@@ -1112,9 +1232,11 @@ export function App() {
     const terminalHeight = dimensions().height
     const preferredWidth = current.kind === "logs"
       ? terminalWidth - 16
+      : current.kind === "settings" ? 92
       : current.kind === "start-command" ? 88 : 76
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
+      : current.kind === "settings" ? terminalHeight - 4
       : current.kind === "add-project" ? 12 + pathListHeight() : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
@@ -1467,13 +1589,29 @@ export function App() {
             backgroundColor={theme.header}
             padding={1}
             flexDirection="column"
-            gap={current().kind === "add-project" ? 0 : 1}
+            gap={current().kind === "add-project" || current().kind === "settings" ? 0 : 1}
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <Show when={current().kind !== "logs"}>
+            <Show when={current().kind !== "logs" && current().kind !== "settings"}>
               <text height={current().kind === "add-project" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
             </Show>
-            {current().kind === "logs" ? (
+            {current().kind === "settings" ? (
+              <SettingsForm
+                draft={current() as Extract<Modal, { kind: "settings" }>}
+                error={(current() as Extract<Modal, { kind: "settings" }>).error}
+                focus={modalFocus() as SettingsFocus}
+                open={settingsOpen()}
+                highlight={settingsHighlight()}
+                onFocus={setModalFocus}
+                onToggle={toggleSettings}
+                onHighlight={setSettingsHighlight}
+                onPick={pickSettings}
+                onDismiss={() => setSettingsOpen(null)}
+                onPrompt={(value) => { settingsPrompt = value }}
+                onSave={saveSettings}
+                onCancel={cancelModal}
+              />
+            ) : current().kind === "logs" ? (
               <>
                 <scrollbox flexGrow={1} focused={true}>
                   <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
