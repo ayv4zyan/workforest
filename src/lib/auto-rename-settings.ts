@@ -54,7 +54,7 @@ export function resolveReasoning(model: string, reasoning: string): string {
 }
 
 export function defaultAutoRename(): AutoRenameSettings {
-  return { provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: "" }
+  return { provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: defaultRenamePrompt }
 }
 
 export function readAutoRename(config: Config): AutoRenameSettings {
@@ -64,13 +64,13 @@ export function readAutoRename(config: Config): AutoRenameSettings {
     provider: "codex",
     model,
     reasoning: resolveReasoning(model, raw?.reasoning ?? "high"),
-    prompt: typeof raw?.prompt === "string" ? raw.prompt : "",
+    prompt: typeof raw?.prompt === "string" && raw.prompt.trim() ? raw.prompt : defaultRenamePrompt,
   }
 }
 
 export function normalizeAutoRename(input: AutoRenameSettings): AutoRenameSettings {
   const model = (renameModels as readonly string[]).includes(input.model) ? input.model : "gpt-5.6-luna"
-  const prompt = input.prompt.trim() === defaultRenamePrompt ? "" : input.prompt
+  const prompt = input.prompt.trim() ? input.prompt : defaultRenamePrompt
   return { provider: "codex", model, reasoning: resolveReasoning(model, input.reasoning), prompt }
 }
 
@@ -83,5 +83,8 @@ export function saveAutoRename(home: string, input: AutoRenameSettings): AutoRen
 }
 
 export function loadAutoRename(home: string): AutoRenameSettings {
-  return readAutoRename(loadConfig(home))
+  const config = loadConfig(home)
+  const settings = readAutoRename(config)
+  if (config.autoRename?.prompt !== settings.prompt) saveAutoRename(home, settings)
+  return settings
 }

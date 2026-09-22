@@ -19,12 +19,13 @@ test("luna has no ultra and an unsupported level falls back to high", () => {
   expect(resolveReasoning("gpt-5.6-sol", "ultra")).toBe("ultra")
 })
 
-test("auto rename settings round-trip and blank matching prompts stay empty", () => {
+test("auto rename settings round-trip and a blank prompt stores the built-in instructions", () => {
   const home = mkdtempSync(join(tmpdir(), "wf-rename-cfg-"))
-  expect(loadAutoRename(home)).toEqual({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: "" })
+  expect(loadAutoRename(home)).toEqual({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: defaultRenamePrompt })
   saveAutoRename(home, { provider: "codex", model: "gpt-5.6-sol", reasoning: "ultra", prompt: "Name the branch." })
   expect(loadAutoRename(home)).toEqual({ provider: "codex", model: "gpt-5.6-sol", reasoning: "ultra", prompt: "Name the branch." })
-  const stored = saveAutoRename(home, { provider: "codex", model: "gpt-5.6-luna", reasoning: "ultra", prompt: defaultRenamePrompt })
-  expect(stored).toEqual({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: "" })
+  const stored = saveAutoRename(home, { provider: "codex", model: "gpt-5.6-luna", reasoning: "ultra", prompt: "  " })
+  expect(stored).toEqual({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: defaultRenamePrompt })
   expect(normalizeAutoRename({ provider: "codex", model: "nope", reasoning: "low", prompt: "  " }).model).toBe("gpt-5.6-luna")
+  expect(normalizeAutoRename({ provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: "" }).prompt).toBe(defaultRenamePrompt)
 })

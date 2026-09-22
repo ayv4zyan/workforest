@@ -13,7 +13,9 @@ import { setupWorktreeDeps } from "./lib/deps.ts"
 import {
   createWorktree,
   isDirty,
+  listBranches,
   listWorktrees,
+  mainWorktreeBranch,
   removeWorktreeAsync,
   renameWorktree,
   worktreeDisplayName,
@@ -36,7 +38,7 @@ import type { GitWorktree, Project, ServerRow } from "./lib/types.ts"
 type Pane = "projects" | "trees"
 type FocusRow = "header" | "panes" | "pane-actions"
 type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
-type ModalFocus = "input" | "rename-folder" | "submit" | "cancel" | SettingsFocus
+type ModalFocus = "input" | "source" | "rename-folder" | "submit" | "cancel" | SettingsFocus
 type Action = {
   id: string
   label: string
@@ -57,7 +59,7 @@ type Modal =
   | { kind: "settings"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
   | { kind: "auto-rename" }
   | { kind: "add-project"; value: string; error?: string }
-  | { kind: "new-tree"; value: string; error?: string }
+  | { kind: "new-tree"; value: string; source: string; branches: string[]; branchOpen?: boolean; error?: string }
   | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
@@ -78,6 +80,19 @@ function RenameProgress() {
 
 export function App() {
   const renderer = useRenderer()
+  let sourceClickClaimed = false
+  function claimSourceClick() {
+    sourceClickClaimed = true
+    queueMicrotask(() => { sourceClickClaimed = false })
+  }
+  function pointAt() {
+    renderer.setMousePointer("pointer")
+    renderer.requestRender()
+  }
+  function pointAway() {
+    renderer.setMousePointer("default")
+    renderer.requestRender()
+  }
   const dimensions = useTerminalDimensions()
   const [menu, setMenu] = createSignal<RowMenu | null>(null)
   const [menuIndex, setMenuIndex] = createSignal(0)
@@ -436,6 +451,7 @@ export function App() {
     return [
       { id: "btn-rename", label: "Rename", trailingLabel: "›", disabled: !linked, onPress: openRenameSubmenu },
       { id: "btn-copy-path", label: "Copy path", disabled: !tree, onPress: copyWorktreePath },
+      { id: "btn-create-tree", label: "Create worktree", disabled: !tree || busy(), onPress: () => openNewTree(tree?.branch ?? undefined) },
       { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
     ]
   }
@@ -530,6 +546,7 @@ export function App() {
     if (!current) return []
     if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))
     if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
+    if (current.kind === "new-tree") return ["input", "source", "submit", "cancel"]
     return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
   }
 
@@ -547,7 +564,7 @@ export function App() {
     const hasInput = "value" in current
     const focus = modalFocus()
 
-    if (current.kind === "rename" && (name === "up" || name === "down")) {
+    if ((current.kind === "rename" || current.kind === "new-tree") && (name === "up" || name === "down")) {
       preventDefault()
       cycleModalFocus(name === "up" ? -1 : 1)
       return
@@ -644,13 +661,34 @@ export function App() {
     showModal({ kind: "unregister" })
   }
 
-  function openNewTree() {
+  function openNewTree(sourceBranch?: string) {
     if (busy()) return
-    if (!selectedProject()) {
+    const project = selectedProject()
+    if (!project) {
       setStatus("add a project first")
       return
     }
-    showModal({ kind: "new-tree", value: "" })
+    const branches = listBranches(project.path)
+    const fallback = mainWorktreeBranch(project.path)
+    const source = sourceBranch && branches.includes(sourceBranch)
+      ? sourceBranch
+      : branches.includes(fallback) ? fallback : branches[0] ?? fallback
+    setSettingsHighlight(Math.max(0, branches.indexOf(source)))
+    showModal({ kind: "new-tree", value: "", source, branches })
+  }
+
+  function toggleSourceMenu() {
+    const current = modal()
+    if (current?.kind !== "new-tree") return
+    const branchOpen = !current.branchOpen
+    if (branchOpen) setSettingsHighlight(Math.max(0, current.branches.indexOf(current.source)))
+    setModal({ ...current, branchOpen })
+    setModalFocus("source")
+  }
+
+  function pickSource(name: string) {
+    setModal((current) => current?.kind === "new-tree" ? { ...current, source: name, branchOpen: false, error: undefined } : current)
+    setModalFocus("source")
   }
 
   function openRename() {
@@ -836,6 +874,22 @@ export function App() {
         if (["escape", "enter", "return"].includes(key.name)) renameRequest?.abort()
         return
       }
+      const openTreeModal = modal()
+      if (openTreeModal?.kind === "new-tree" && openTreeModal.branchOpen) {
+        const branches = openTreeModal.branches
+        key.preventDefault()
+        if (key.name === "escape") {
+          setModal({ ...openTreeModal, branchOpen: false })
+        } else if (key.name === "up" || key.name === "down") {
+          const delta = key.name === "up" ? -1 : 1
+          const count = Math.max(1, branches.length)
+          setSettingsHighlight((settingsHighlight() + delta + count) % count)
+        } else if (["return", "enter"].includes(key.name)) {
+          const value = branches[settingsHighlight()]
+          if (value) pickSource(value)
+        }
+        return
+      }
       if (modal()?.kind === "logs") {
         if (["escape", "enter", "return"].includes(key.name)) {
           key.preventDefault()
@@ -873,6 +927,11 @@ export function App() {
       }
       if (key.name === "left" || key.name === "right" || key.name === "up" || key.name === "down") {
         handleModalArrow(key.name, () => key.preventDefault())
+        return
+      }
+      if (modalFocus() === "source" && ["space", "return", "enter"].includes(key.name)) {
+        key.preventDefault()
+        toggleSourceMenu()
         return
       }
       if (modalFocus() === "rename-folder" && ["space", "return", "enter"].includes(key.name)) {
@@ -1041,6 +1100,7 @@ export function App() {
           home: dataDir(),
           projectId: project.id,
           name: value,
+          startPoint: current.source,
         })
         const notes = setupWorktreeDeps(project.path, tree.path)
         setSelectedTreePath(tree.path)
@@ -1189,7 +1249,7 @@ export function App() {
       case "add-project":
         return "Path to the main checkout"
       case "new-tree":
-        return "Name is used for the directory and the branch"
+        return "Name is the new directory and branch. Source is the branch it starts from."
       case "rename":
         return "Renames the branch. Renaming the folder changes its path; apps using this worktree may need to reopen it."
       case "delete": {
@@ -1237,7 +1297,7 @@ export function App() {
     const preferredHeight = current.kind === "logs"
       ? Math.floor(terminalHeight * 0.7)
       : current.kind === "settings" ? terminalHeight - 4
-      : current.kind === "add-project" ? 12 + pathListHeight() : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
+      : current.kind === "add-project" ? 12 + pathListHeight() : current.kind === "new-tree" ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
     const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
     const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
     return {
@@ -1590,7 +1650,13 @@ export function App() {
             padding={1}
             flexDirection="column"
             gap={current().kind === "add-project" || current().kind === "settings" ? 0 : 1}
-            onMouseDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => {
+              event.stopPropagation()
+              const open = modal()
+              if (!sourceClickClaimed && open?.kind === "new-tree" && open.branchOpen) {
+                setModal({ ...open, branchOpen: false })
+              }
+            }}
           >
             <Show when={current().kind !== "logs" && current().kind !== "settings"}>
               <text height={current().kind === "add-project" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current())}</text>
@@ -1652,6 +1718,87 @@ export function App() {
                     }}
                   />
                 ) : null}
+                <Show when={current().kind === "new-tree"}>
+                  {(() => {
+                    const draft = current() as Extract<Modal, { kind: "new-tree" }>
+                    const open = () => Boolean(draft.branchOpen)
+                    const active = () => modalFocus() === "source" || open()
+                    return (
+                      <box flexGrow={1} flexShrink={0} flexDirection="column">
+                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>Source branch</text>
+                        <box height={3} flexShrink={0}>
+                          <box
+                            id="source-branch"
+                            height={3}
+                            border
+                            borderColor={active() ? theme.accent : theme.border}
+                            backgroundColor={active() ? "#21262d" : theme.panel}
+                            paddingLeft={1}
+                            paddingRight={1}
+                            flexDirection="row"
+                            alignItems="center"
+                            justifyContent="space-between"
+                            onMouseOver={pointAt}
+                            onMouseOut={pointAway}
+                            onMouseDown={(event) => {
+                              event.stopPropagation()
+                              claimSourceClick()
+                              if (event.button !== 0) return
+                              setModalFocus("source")
+                              toggleSourceMenu()
+                            }}
+                          >
+                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft.source || "no branches"}</text>
+                            <text fg={theme.muted} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{open() ? "▴" : "▾"}</text>
+                          </box>
+                        </box>
+                        <Show when={open()}>
+                          <box
+                            id="source-branch-menu"
+                            position="absolute"
+                            top={4}
+                            left={0}
+                            width="100%"
+                            height={draft.branches.length + 2}
+                            zIndex={40}
+                            border
+                            borderColor={theme.accent}
+                            backgroundColor={theme.header}
+                            onMouseDown={(event) => {
+                              event.stopPropagation()
+                              claimSourceClick()
+                            }}
+                          >
+                            <For each={draft.branches}>{(name, index) => {
+                              const hot = () => settingsHighlight() === index()
+                              const selected = () => name === draft.source
+                              return (
+                                <box
+                                  height={1}
+                                  flexShrink={0}
+                                  paddingLeft={1}
+                                  paddingRight={1}
+                                  backgroundColor={hot() ? theme.selectedBg : theme.header}
+                                  onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }}
+                                  onMouseOut={pointAway}
+                                  onMouseDown={(event) => {
+                                    event.stopPropagation()
+                                    claimSourceClick()
+                                    if (event.button === 0) pickSource(name)
+                                  }}
+                                >
+                                  <text fg={hot() || selected() ? theme.selectedFg : theme.text} selectable={false} onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }} onMouseOut={pointAway}>
+                                    {`${selected() ? "●" : "○"} ${name}`}
+                                  </text>
+                                </box>
+                              )
+                            }}</For>
+                          </box>
+                        </Show>
+                      </box>
+                    )
+                  })()}
+                </Show>
                 <Show when={current().kind === "add-project"}>
                   <box flexDirection="column" height={pathListHeight() + 2} flexShrink={0}>
                     <box height={pathListHeight()} flexShrink={0} flexDirection="column">

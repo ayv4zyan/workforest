@@ -35,7 +35,7 @@ async function paint(setup: { renderOnce: () => Promise<void> }) {
   await setup.renderOnce()
 }
 
-test("worktree details follow selection and long rows fit the pane after resizing", async () => {
+test.serial("worktree details follow selection and long rows fit the pane after resizing", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-tree-layout-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -78,7 +78,7 @@ test("worktree details follow selection and long rows fit the pane after resizin
   }
 })
 
-test("test renderer can paint text", async () => {
+test.serial("test renderer can paint text", async () => {
   const setup = await testRender(() => (
     <box>
       <text>hello-forest</text>
@@ -92,7 +92,7 @@ test("test renderer can paint text", async () => {
   }
 })
 
-test("box onMouseDown receives a mock click", async () => {
+test.serial("box onMouseDown receives a mock click", async () => {
   const [clicked, setClicked] = createSignal(false)
   const setup = await testRender(
     () => (
@@ -113,7 +113,7 @@ test("box onMouseDown receives a mock click", async () => {
   }
 })
 
-test("ActionButton click fires onPress", async () => {
+test.serial("ActionButton click fires onPress", async () => {
   const [clicked, setClicked] = createSignal(false)
   const setup = await testRender(
     () => <ActionButton label="servers" onPress={() => setClicked(true)} />,
@@ -133,7 +133,7 @@ test("ActionButton click fires onPress", async () => {
   }
 })
 
-test("an open settings dropdown switches and selects on one click", async () => {
+test.serial("an open settings dropdown switches and selects on one click", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-settings-click-"))
   const setup = await testRender(() => <App />, { width: 110, height: 36 })
   try {
@@ -163,7 +163,7 @@ test("an open settings dropdown switches and selects on one click", async () => 
   }
 })
 
-test("renders the workforest shell with clickable controls", async () => {
+test.serial("renders the workforest shell with clickable controls", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -185,7 +185,7 @@ test("renders the workforest shell with clickable controls", async () => {
   }
 })
 
-test("dragging the pane divider resizes and persists the projects pane", async () => {
+test.serial("dragging the pane divider resizes and persists the projects pane", async () => {
   const home = mkdtempSync(join(tmpdir(), "wf-resize-"))
   process.env.WORKFOREST_HOME = home
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
@@ -223,7 +223,7 @@ test("dragging the pane divider resizes and persists the projects pane", async (
   }
 })
 
-test("arrow keys cycle focused panes", async () => {
+test.serial("arrow keys cycle focused panes", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -254,7 +254,7 @@ test("arrow keys cycle focused panes", async () => {
   }
 })
 
-test("vertical arrows navigate lists and only leave from the first item", async () => {
+test.serial("vertical arrows navigate lists and only leave from the first item", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const repos = [join(process.env.WORKFOREST_HOME, "alpha"), join(process.env.WORKFOREST_HOME, "beta")]
   for (const repo of repos) {
@@ -286,7 +286,7 @@ test("vertical arrows navigate lists and only leave from the first item", async 
   }
 })
 
-test("pane add buttons remain visible when focus changes", async () => {
+test.serial("pane add buttons remain visible when focus changes", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -321,7 +321,7 @@ async function openAddProjectModal(setup: {
   expect(setup.captureCharFrame()).toContain("add project")
 }
 
-test("up from an empty pane focuses the header and down returns to the pane", async () => {
+test.serial("up from an empty pane focuses the header and down returns to the pane", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -339,7 +339,7 @@ test("up from an empty pane focuses the header and down returns to the pane", as
   }
 })
 
-test("modal down from the path field focuses submit", async () => {
+test.serial("modal down from the path field focuses submit", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -357,7 +357,7 @@ test("modal down from the path field focuses submit", async () => {
   }
 })
 
-test("modal right from submit focuses cancel", async () => {
+test.serial("modal right from submit focuses cancel", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -376,7 +376,7 @@ test("modal right from submit focuses cancel", async () => {
   }
 })
 
-test("modal left and right stay in the path field", async () => {
+test.serial("modal left and right stay in the path field", async () => {
   process.env.WORKFOREST_HOME = mkdtempSync(join(tmpdir(), "wf-ui-"))
   const setup = await testRender(() => <App />, { width: 140, height: 36 })
   try {
@@ -407,7 +407,7 @@ test("modal left and right stay in the path field", async () => {
 
 
 
-test("auto-rename defaults to branch only and folder rename is opt-in", async () => {
+test.serial("auto-rename defaults to branch only and folder rename is opt-in", async () => {
   const root = mkdtempSync(join(tmpdir(), "wf-auto-ui-"))
   const oldHome = process.env.WORKFOREST_HOME
   const oldPath = process.env.PATH
@@ -503,7 +503,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
   }
 })
 
-test("worktree start saves a custom project command, remembers it, shows logs, and stops", async () => {
+test.serial("worktree start saves a custom project command, remembers it, shows logs, and stops", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-server-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -619,7 +619,7 @@ test("worktree start saves a custom project command, remembers it, shows logs, a
   }
 }, 15000)
 
-test("row menus target the clicked item, protect main, and support mouse and keyboard", async () => {
+test.serial("row menus target the clicked item, protect main, and support mouse and keyboard", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-menu-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -698,9 +698,16 @@ test("row menus target the clicked item, protect main, and support mouse and key
     await paint(setup)
 
     await rightClick("feature-menu")
+    await click("btn-create-tree")
+    expect(setup.captureCharFrame()).toContain("new worktree")
+    expect(setup.captureCharFrame()).toContain("feature-menu")
+    await click("btn-cancel")
+
+    await rightClick("feature-menu")
     const menu = findById(setup.renderer.root, "context-menu")!
     expect(menu.x + menu.width).toBeLessThanOrEqual(90)
     expect(menu.y + menu.height).toBeLessThanOrEqual(18)
+    setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressEnter()
@@ -726,7 +733,7 @@ test("row menus target the clicked item, protect main, and support mouse and key
   }
 })
 
-test("worktree deletion renders its busy state while git is still running", async () => {
+test.serial("worktree deletion renders its busy state while git is still running", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-delete-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const oldPath = process.env.PATH
@@ -780,7 +787,7 @@ process.exit(child.exitCode)
   }
 })
 
-test("input modal keeps its action buttons inside the bottom padding", async () => {
+test.serial("input modal keeps its action buttons inside the bottom padding", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-modal-layout-")))
   const oldHome = process.env.WORKFOREST_HOME
   const repo = join(root, "repo")
@@ -800,6 +807,17 @@ test("input modal keeps its action buttons inside the bottom padding", async () 
     const modal = submit.parent?.parent
     expect(modal).toBeTruthy()
     expect(submit.y + submit.height).toBeLessThanOrEqual(modal!.y + modal!.height - 2)
+    const submitY = submit.y
+    const source = findById(setup.renderer.root, "source-branch")!
+    await setup.mockMouse.click(source.x + 1, source.y + 1)
+    await paint(setup)
+    const menu = findById(setup.renderer.root, "source-branch-menu")!
+    const field = findById(setup.renderer.root, "source-branch")!
+    expect(menu).toBeTruthy()
+    expect(menu.y).toBeGreaterThanOrEqual(field.y + field.height)
+    expect(menu.x).toBe(field.x)
+    expect(menu.width).toBe(field.width)
+    expect(findById(setup.renderer.root, "btn-submit")!.y).toBe(submitY)
   } finally {
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
@@ -807,7 +825,7 @@ test("input modal keeps its action buttons inside the bottom padding", async () 
   }
 })
 
-test("selected row menu follows scrolling and stays inside a resized terminal", async () => {
+test.serial("selected row menu follows scrolling and stays inside a resized terminal", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-scroll-menu-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -842,7 +860,7 @@ test("selected row menu follows scrolling and stays inside a resized terminal", 
   }
 })
 
-test("worktree groups sort names and collapse with mouse and keyboard", async () => {
+test.serial("worktree groups sort names and collapse with mouse and keyboard", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-groups-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -880,7 +898,7 @@ test("worktree groups sort names and collapse with mouse and keyboard", async ()
   }
 })
 
-test("bottom search filters projects and worktrees without firing shortcuts", async () => {
+test.serial("bottom search filters projects and worktrees without firing shortcuts", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-search-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   const home = join(root, "home")
@@ -956,7 +974,7 @@ test("bottom search filters projects and worktrees without firing shortcuts", as
   }
 })
 
-test("add project completes with keyboard and mouse, then validates the chosen path", async () => {
+test.serial("add project completes with keyboard and mouse, then validates the chosen path", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-complete-ui-")))
   const oldHome = process.env.WORKFOREST_HOME
   process.env.WORKFOREST_HOME = join(root, "home")
@@ -1025,7 +1043,7 @@ test("add project completes with keyboard and mouse, then validates the chosen p
   }
 })
 
-test("add project keeps the dialog, input and buttons still while typing and deleting", async () => {
+test.serial("add project keeps the dialog, input and buttons still while typing and deleting", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-completion-layout-")))
   const oldHome = process.env.WORKFOREST_HOME
   process.env.WORKFOREST_HOME = join(root, "home")

@@ -61,7 +61,8 @@ export function ActionButton(props: {
       paddingLeft={1}
       paddingRight={1}
       flexDirection="row"
-      justifyContent={props.trailingLabel ? "space-between" : "flex-start"}
+      alignItems="center"
+      justifyContent={props.trailingLabel ? "space-between" : "center"}
       flexShrink={0}
       borderColor={border()}
       backgroundColor={bg()}

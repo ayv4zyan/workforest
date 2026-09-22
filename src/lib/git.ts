@@ -76,6 +76,19 @@ export function branchExists(repoPath: string, name: string): boolean {
   return git(repoPath, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`]).exitCode === 0
 }
 
+export function listBranches(repoPath: string): string[] {
+  const stdout = gitOk(repoPath, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+  return stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0).sort((a, b) => a.localeCompare(b))
+}
+
+export function mainWorktreeBranch(repoPath: string): string {
+  const main = listWorktrees(repoPath).find((tree) => tree.isMain)
+  if (main?.branch) return main.branch
+  const branches = listBranches(repoPath)
+  if (branches.length > 0) return branches[0]!
+  return defaultStartPoint(repoPath)
+}
+
 export function validateName(repoPath: string, name: string): void {
   if (!isWorktreeName(name)) {
     throw new Error(`Invalid worktree name "${name}"`)
@@ -108,6 +121,7 @@ export function createWorktree(opts: {
   home: string
   projectId: string
   name: string
+  startPoint?: string
 }): GitWorktree {
   const { repoPath, home, projectId, name } = opts
   validateName(repoPath, name)
@@ -116,10 +130,14 @@ export function createWorktree(opts: {
   if (listWorktrees(repoPath).some((tree) => samePath(tree.path, dest))) {
     throw new Error(`Worktree already exists at ${dest}`)
   }
+  const start = opts.startPoint?.trim() || defaultStartPoint(repoPath)
+  if (opts.startPoint?.trim() && !branchExists(repoPath, start)) {
+    throw new Error(`Source branch "${start}" does not exist`)
+  }
   if (branchExists(repoPath, name)) {
     gitOk(repoPath, ["worktree", "add", dest, name])
   } else {
-    gitOk(repoPath, ["worktree", "add", "-b", name, dest, defaultStartPoint(repoPath)])
+    gitOk(repoPath, ["worktree", "add", "-b", name, dest, start])
   }
   const listed = listWorktrees(repoPath).find(
     (tree) => samePath(tree.path, dest) || (!tree.isMain && tree.branch === name),

@@ -6,7 +6,9 @@ import { execOk } from "./exec.ts"
 import {
   createWorktree,
   isDirty,
+  listBranches,
   listWorktrees,
+  mainWorktreeBranch,
   parseWorktreeList,
   removeWorktree,
   renameWorktree,
@@ -43,6 +45,31 @@ function initRepo(): string {
   execOk(["git", "commit", "-m", "init"], { cwd: dir })
   return dir
 }
+
+test("createWorktree branches from the chosen source", () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  execOk(["git", "checkout", "-b", "release"], { cwd: repo })
+  writeFileSync(join(repo, "release.txt"), "from release\n")
+  execOk(["git", "add", "."], { cwd: repo })
+  execOk(["git", "commit", "-m", "release"], { cwd: repo })
+  execOk(["git", "checkout", "main"], { cwd: repo })
+  expect(mainWorktreeBranch(repo)).toBe("main")
+  expect(listBranches(repo)).toEqual(["main", "release"])
+
+  const created = createWorktree({ repoPath: repo, home, projectId: "demo", name: "from-release", startPoint: "release" })
+  expect(created.branch).toBe("from-release")
+  expect(existsSync(join(created.path, "release.txt"))).toBe(true)
+  expect(existsSync(join(created.path, "README.md"))).toBe(true)
+
+  expect(() => createWorktree({
+    repoPath: repo,
+    home,
+    projectId: "demo",
+    name: "missing-source",
+    startPoint: "no-such-branch",
+  })).toThrow('Source branch "no-such-branch" does not exist')
+})
 
 test("create, rename both directory and branch, then delete", () => {
   const repo = initRepo()

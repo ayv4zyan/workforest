@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { defaultRenamePrompt, normalizeAutoRename, type AutoRenameSettings } from "./auto-rename-settings.ts"
+import { normalizeAutoRename, type AutoRenameSettings } from "./auto-rename-settings.ts"
 import { defaultStartPoint, git, gitOk, validateName } from "./git.ts"
 import type { GitWorktree } from "./types.ts"
 
@@ -48,7 +48,7 @@ export function parseSuggestedName(output: string): string {
 export async function suggestWorktreeName(repoPath: string, tree: GitWorktree, signal?: AbortSignal, settings?: AutoRenameSettings): Promise<string> {
   const context = renameContext(repoPath, tree)
   const resolved = normalizeAutoRename(settings ?? { provider: "codex", model: "gpt-5.6-luna", reasoning: "high", prompt: "" })
-  const instructions = resolved.prompt.trim() ? resolved.prompt : defaultRenamePrompt
+  const instructions = resolved.prompt
   const executable = Bun.which("codex", { PATH: process.env.PATH })
   if (!executable) throw new Error("Codex CLI not found. Install Codex and run codex login first.")
   signal?.throwIfAborted()
