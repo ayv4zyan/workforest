@@ -46,6 +46,9 @@ Override the data dir with `WORKFOREST_HOME` (default `~/.workforest`).
 | Logs / stop | Header **logs** and **■**; stop confirms before killing external PIDs |
 | Rename | Branch by default; optional folder move; or **auto** via Codex Luna |
 
+If dependency setup fails, the new worktree stays available. Select it and use
+**Set up dependencies** in its row menu to retry.
+
 Two panes: **projects** and **worktrees**. Mouse-first (click, double-click to activate, wheel, right-click / **⋯** menus). Keyboard still works.
 
 ## Keys

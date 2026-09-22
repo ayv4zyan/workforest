@@ -30,8 +30,12 @@ function findById(node: Renderable, id: string): Renderable | undefined {
   return undefined
 }
 
+const initialized = new WeakSet<object>()
+
 async function paint(setup: { renderOnce: () => Promise<void> }) {
-  await Bun.sleep(20)
+  const firstPaint = !initialized.has(setup)
+  initialized.add(setup)
+  await Bun.sleep(firstPaint ? 200 : 20)
   await setup.renderOnce()
 }
 
@@ -478,6 +482,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
     const renamed = listWorktrees(repo)[1]!
     expect(renamed.branch).toBe("agent/fix-login-flow")
     expect(renamed.path).toBe(tree.path)
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("○ agent/fix-login-flow"); i++) await paint(setup)
     await setup.mockInput.typeText("m")
     await paint(setup)
     await click("btn-rename")
@@ -720,6 +725,8 @@ test.serial("row menus target the clicked item, protect main, and support mouse 
     await click("btn-submit")
     expect(listWorktrees(repos[1]!)).toHaveLength(1)
 
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("deleted feature-menu"); i++) await paint(setup)
+
     await rightClick("beta")
     await click("btn-unregister")
     expect(setup.captureCharFrame()).toContain("Remove beta from the list?")
@@ -759,7 +766,7 @@ process.exit(child.exitCode)
   process.env.PATH = `${bin}:${oldPath}`
   const setup = await testRender(() => <App />, { width: 120, height: 28 })
   try {
-    await paint(setup)
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("slow-delete"); i++) await paint(setup)
     const row = findText(setup.captureCharFrame(), "slow-delete")
     await setup.mockMouse.click(row.x, row.y, 2)
     await paint(setup)

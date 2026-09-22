@@ -1,0 +1,306 @@
+import { For, Show, createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
+import { useRenderer } from "@opentui/solid"
+import type { InputRenderable } from "@opentui/core"
+import type { Project, ServerRow } from "../lib/types.ts"
+import { theme } from "../theme.ts"
+import { ActionButton } from "./button.tsx"
+import { SettingsForm, type SettingsFocus } from "./settings-modal.tsx"
+import { modalBody, modalError, modalPlaceholder, modalSize, modalTitle, modalValue, type Modal, type ModalFocus } from "./modal-model.ts"
+import type { TreeRow } from "./workspace.ts"
+import type { createSettingsWorkflow } from "./settings-workflow.ts"
+import type { createPathWorkflow } from "./path-workflow.ts"
+
+function RenameProgress() {
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const [frame, setFrame] = createSignal(0)
+  const timer = setInterval(() => setFrame((value) => (value + 1) % frames.length), 100)
+  onCleanup(() => clearInterval(timer))
+  return <text id="rename-progress" height={1} fg={theme.accent} selectable={false}>{`${frames[frame()]} Generating a name…`}</text>
+}
+
+type ModalLayerProps = {
+  model: {
+    modal: Accessor<Modal | null>
+    setModal: Setter<Modal | null>
+    modalFocus: Accessor<ModalFocus>
+    setModalFocus: Setter<ModalFocus>
+    dimensions: Accessor<{ width: number; height: number }>
+    selectedProject: () => Project | null
+    selectedTree: () => TreeRow | null
+    servers: Accessor<ServerRow[]>
+    setModalInput: (node: InputRenderable) => void
+  }
+  settings: Pick<ReturnType<typeof createSettingsWorkflow>,
+    "settingsOpen" | "setSettingsOpen" | "settingsHighlight" | "setSettingsHighlight" |
+    "toggleSettings" | "pickSettings" | "setPrompt" | "saveSettings">
+  paths: ReturnType<typeof createPathWorkflow>
+  actions: {
+    cancelModal: () => void
+    abortRename: () => void
+    submitModal: (value: string) => void
+    toggleSourceMenu: () => void
+    pickSource: (name: string) => void
+    toggleRenameFolder: () => void
+    acceptModal: () => void
+  }
+}
+
+export function ModalLayer(props: ModalLayerProps) {
+  const { modal, setModal, modalFocus, setModalFocus, dimensions,
+    selectedProject, selectedTree, servers } = props.model
+  const { settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
+    toggleSettings, pickSettings, saveSettings } = props.settings
+  const { pathListHeight, completionValue, visiblePaths, pathIndex, setPathIndex,
+    pathSuggestions, applyPath } = props.paths
+  const { cancelModal, submitModal, toggleSourceMenu, pickSource,
+    toggleRenameFolder, acceptModal } = props.actions
+  const renderer = useRenderer()
+  let sourceClickClaimed = false
+  function claimSourceClick() {
+    sourceClickClaimed = true
+    queueMicrotask(() => { sourceClickClaimed = false })
+  }
+  function pointAt() {
+    renderer.setMousePointer("pointer")
+    renderer.requestRender()
+  }
+  function pointAway() {
+    renderer.setMousePointer("default")
+    renderer.requestRender()
+  }
+  return <>
+      <Show when={modal()?.kind === "auto-rename"}>
+        <box position="absolute" left={0} top={0} width="100%" height="100%" zIndex={19}
+          onMouseDown={(event) => { event.stopPropagation(); event.preventDefault() }}
+          onMouseScroll={(event) => { event.stopPropagation(); event.preventDefault() }} />
+      </Show>
+      <Show when={modal()} fallback={<box width={0} height={0} />}>
+        {(current: () => Modal) => (
+          <box
+            position="absolute"
+            id="modal-dialog"
+            left={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).left}
+            top={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).top}
+            width={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).width}
+            height={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).height}
+            zIndex={20}
+            border
+            borderColor={theme.accent}
+            title={modalTitle(current())}
+            titleColor={theme.accent}
+            backgroundColor={theme.header}
+            padding={1}
+            flexDirection="column"
+            gap={current().kind === "add-project" || current().kind === "settings" ? 0 : 1}
+            onMouseDown={(event) => {
+              event.stopPropagation()
+              const open = modal()
+              if (!sourceClickClaimed && open?.kind === "new-tree" && open.branchOpen) {
+                setModal({ ...open, branchOpen: false })
+              }
+            }}
+          >
+            <Show when={current().kind !== "logs" && current().kind !== "settings"}>
+              <text height={current().kind === "add-project" ? 1 : 2} overflow="hidden" fg={theme.text} selectable={false}>{modalBody(current(), selectedProject(), selectedTree(), servers())}</text>
+            </Show>
+            {current().kind === "settings" ? (
+              <SettingsForm
+                draft={current() as Extract<Modal, { kind: "settings" }>}
+                error={(current() as Extract<Modal, { kind: "settings" }>).error}
+                focus={modalFocus() as SettingsFocus}
+                open={settingsOpen()}
+                highlight={settingsHighlight()}
+                onFocus={setModalFocus}
+                onToggle={toggleSettings}
+                onHighlight={setSettingsHighlight}
+                onPick={pickSettings}
+                onDismiss={() => setSettingsOpen(null)}
+                onPrompt={props.settings.setPrompt}
+                onSave={saveSettings}
+                onCancel={cancelModal}
+              />
+            ) : current().kind === "logs" ? (
+              <>
+                <scrollbox flexGrow={1} focused={true}>
+                  <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
+                </scrollbox>
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
+                </box>
+              </>
+            ) : current().kind === "auto-rename" ? (
+              <>
+                <RenameProgress />
+                <box flexDirection="row" justifyContent="flex-end">
+                  <ActionButton id="btn-cancel-generation" label="cancel" active onPress={props.actions.abortRename} />
+                </box>
+              </>
+            ) : (
+              <>
+                {"value" in current() ? (
+                  <input
+                    id="modal-input"
+                    ref={props.model.setModalInput}
+                    focused={modalFocus() === "input"}
+                    value={modalValue(current())}
+                    placeholder={modalPlaceholder(current())}
+                    width="100%"
+                    backgroundColor={theme.panel}
+                    focusedBackgroundColor="#21262d"
+                    textColor={theme.text}
+                    cursorColor={theme.accent}
+                    onMouseDown={() => setModalFocus("input")}
+                    onInput={(value) => {
+                      const now = modal()
+                      if (now && "value" in now) setModal({ ...now, value, error: undefined })
+                    }}
+                    onSubmit={() => {
+                      const now = modal()
+                      if (now && "value" in now) submitModal(now.value)
+                    }}
+                  />
+                ) : null}
+                <Show when={current().kind === "new-tree"}>
+                  {(() => {
+                    const draft = current() as Extract<Modal, { kind: "new-tree" }>
+                    const open = () => Boolean(draft.branchOpen)
+                    const active = () => modalFocus() === "source" || open()
+                    return (
+                      <box flexGrow={1} flexShrink={0} flexDirection="column">
+                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>Source branch</text>
+                        <box height={3} flexShrink={0}>
+                          <box
+                            id="source-branch"
+                            height={3}
+                            border
+                            borderColor={active() ? theme.accent : theme.border}
+                            backgroundColor={active() ? "#21262d" : theme.panel}
+                            paddingLeft={1}
+                            paddingRight={1}
+                            flexDirection="row"
+                            alignItems="center"
+                            justifyContent="space-between"
+                            onMouseOver={pointAt}
+                            onMouseOut={pointAway}
+                            onMouseDown={(event) => {
+                              event.stopPropagation()
+                              claimSourceClick()
+                              if (event.button !== 0) return
+                              setModalFocus("source")
+                              toggleSourceMenu()
+                            }}
+                          >
+                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft.source || "no branches"}</text>
+                            <text fg={theme.muted} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{open() ? "▴" : "▾"}</text>
+                          </box>
+                        </box>
+                        <Show when={open()}>
+                          <box
+                            id="source-branch-menu"
+                            position="absolute"
+                            top={4}
+                            left={0}
+                            width="100%"
+                            height={draft.branches.length + 2}
+                            zIndex={40}
+                            border
+                            borderColor={theme.accent}
+                            backgroundColor={theme.header}
+                            onMouseDown={(event) => {
+                              event.stopPropagation()
+                              claimSourceClick()
+                            }}
+                          >
+                            <For each={draft.branches}>{(name, index) => {
+                              const hot = () => settingsHighlight() === index()
+                              const selected = () => name === draft.source
+                              return (
+                                <box
+                                  height={1}
+                                  flexShrink={0}
+                                  paddingLeft={1}
+                                  paddingRight={1}
+                                  backgroundColor={hot() ? theme.selectedBg : theme.header}
+                                  onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }}
+                                  onMouseOut={pointAway}
+                                  onMouseDown={(event) => {
+                                    event.stopPropagation()
+                                    claimSourceClick()
+                                    if (event.button === 0) pickSource(name)
+                                  }}
+                                >
+                                  <text fg={hot() || selected() ? theme.selectedFg : theme.text} selectable={false} onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }} onMouseOut={pointAway}>
+                                    {`${selected() ? "●" : "○"} ${name}`}
+                                  </text>
+                                </box>
+                              )
+                            }}</For>
+                          </box>
+                        </Show>
+                      </box>
+                    )
+                  })()}
+                </Show>
+                <Show when={current().kind === "add-project"}>
+                  <box flexDirection="column" height={pathListHeight() + 2} flexShrink={0}>
+                    <box height={pathListHeight()} flexShrink={0} flexDirection="column">
+                      <Show when={!completionValue()?.trim()}>
+                        <text height={1} fg={theme.muted} selectable={false}>Type a path to see matching directories.</text>
+                      </Show>
+                      <For each={visiblePaths()}>{(row) => (
+                        <box id={`path-suggestion-${row.index}`} height={1} flexShrink={0}
+                          backgroundColor={pathIndex() === row.index ? theme.selectedBg : theme.panel}
+                          onMouseDown={(event) => { if (event.button === 0) applyPath(row.index) }}
+                          onMouseScroll={(event) => {
+                            setPathIndex(Math.max(0, Math.min(pathSuggestions().length - 1, pathIndex() + (event.scroll?.direction === "up" ? -1 : 1))))
+                            setModalFocus("input")
+                          }}>
+                          <text truncate fg={pathIndex() === row.index ? theme.selectedFg : theme.text} selectable={false}>{`${pathIndex() === row.index ? "▶" : " "} ${row.name}/`}</text>
+                        </box>
+                      )}</For>
+                    </box>
+                    <text height={1} fg={theme.muted} selectable={false}>Tab / → complete · ↑↓ choose · Enter pick / submit</text>
+                    <text height={1} fg={theme.muted} selectable={false}>{!completionValue()?.trim() ? "Absolute, relative and ~/ paths" : pathSuggestions().length ? `${pathSuggestions().length}${pathSuggestions().length === 20 ? "+" : ""} directories · type to narrow` : "No matching directories"}</text>
+                  </box>
+                </Show>
+                <Show when={current().kind === "rename"}>
+                  <ActionButton
+                    id="btn-rename-folder"
+                    compact
+                    label={`${(current() as Extract<Modal, { kind: "rename" }>).renameFolder ? "[x]" : "[ ]"} Also rename worktree folder`}
+                    active={modalFocus() === "rename-folder"}
+                    onPress={() => {
+                      setModalFocus("rename-folder")
+                      toggleRenameFolder()
+                    }}
+                  />
+                </Show>
+                <text fg={theme.danger} selectable={false}>{modalError(current()) ?? ""}</text>
+                <box flexDirection="row" justifyContent="flex-end" gap={1}>
+                  <ActionButton
+                    id="btn-submit"
+                    label={"value" in current() ? "submit" : "confirm"}
+                    variant="accent"
+                    active={modalFocus() === "submit"}
+                    onPress={() => {
+                      setModalFocus("submit")
+                      acceptModal()
+                    }}
+                  />
+                  <ActionButton
+                    id="btn-cancel"
+                    label="cancel"
+                    active={modalFocus() === "cancel"}
+                    onPress={() => {
+                      setModalFocus("cancel")
+                      cancelModal()
+                    }}
+                  />
+                </box>
+              </>
+            )}
+          </box>
+        )}
+      </Show>
+  </>
+}

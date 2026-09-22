@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, renameSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { dirname, resolve } from "node:path"
 import { configPath } from "./home.ts"
 import { slugify, uniqueId } from "./slug.ts"
@@ -7,22 +8,55 @@ import type { Config, Project } from "./types.ts"
 
 const emptyConfig = (): Config => ({ version: 1, projects: [] })
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+function isConfig(value: unknown): value is Config {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.projects)) return false
+  if (!value.projects.every((project: unknown) => isRecord(project) &&
+    typeof project.id === "string" && project.id.length > 0 &&
+    typeof project.name === "string" && project.name.length > 0 &&
+    typeof project.path === "string" && project.path.length > 0 &&
+    Number.isInteger(project.basePort) &&
+    (project.startCommand === undefined || typeof project.startCommand === "string"))) return false
+  if (value.ui !== undefined && (!isRecord(value.ui) ||
+    (value.ui.projectPaneWidth !== undefined &&
+      (typeof value.ui.projectPaneWidth !== "number" || !Number.isFinite(value.ui.projectPaneWidth))))) return false
+  return true
+}
+
 export function loadConfig(home: string): Config {
   const path = configPath(home)
   if (!existsSync(path)) return emptyConfig()
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as Config
-    if (parsed.version !== 1 || !Array.isArray(parsed.projects)) return emptyConfig()
-    return parsed
-  } catch {
-    return emptyConfig()
+    parsed = JSON.parse(readFileSync(path, "utf8"))
+  } catch (error) {
+    throw new Error(`Cannot read config at ${path}: ${error instanceof Error ? error.message : String(error)}`)
   }
+  if (!isConfig(parsed)) throw new Error(`Invalid config at ${path}: expected version 1 with valid projects`)
+  return parsed
 }
 
 export function saveConfig(home: string, config: Config): void {
   const path = configPath(home)
+  if (!isConfig(config)) throw new Error(`Refusing to write invalid config at ${path}`)
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`)
+  const temporary = `${path}.${randomUUID()}.tmp`
+  let fd: number | undefined
+  try {
+    fd = openSync(temporary, "wx", 0o600)
+    writeFileSync(fd, `${JSON.stringify(config, null, 2)}\n`)
+    fsyncSync(fd)
+    closeSync(fd)
+    fd = undefined
+    renameSync(temporary, path)
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd)
+    if (existsSync(temporary)) unlinkSync(temporary)
+    throw error
+  }
 }
 
 export function setProjectPaneWidth(home: string, width: number): void {

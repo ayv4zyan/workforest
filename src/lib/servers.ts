@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
-import { exec } from "./exec.ts"
+import { exec, execAsync } from "./exec.ts"
 import { logsDir, runDir } from "./home.ts"
 import { resolveDevTarget, spawnCommand, spawnCustomCommand } from "./dev.ts"
 import { forgetPort, loadPorts, pickPort, rememberPort } from "./ports.ts"
@@ -66,11 +66,22 @@ export function listListeners(): Listener[] {
   return parseLsofListen(result.stdout)
 }
 
+export async function listListenersAsync(): Promise<Listener[]> {
+  const result = await execAsync(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"])
+  return result.exitCode !== 0 && !result.stdout.trim() ? [] : parseLsofListen(result.stdout)
+}
+
 export function listCwds(pids: number[]): Map<number, string> {
   if (pids.length === 0) return new Map()
   const result = exec(["lsof", "-a", "-p", pids.join(","), "-d", "cwd", "-Fn"])
   if (result.exitCode !== 0 && !result.stdout.trim()) return new Map()
   return parseLsofCwd(result.stdout)
+}
+
+export async function listCwdsAsync(pids: number[]): Promise<Map<number, string>> {
+  if (pids.length === 0) return new Map()
+  const result = await execAsync(["lsof", "-a", "-p", pids.join(","), "-d", "cwd", "-Fn"])
+  return result.exitCode !== 0 && !result.stdout.trim() ? new Map() : parseLsofCwd(result.stdout)
 }
 
 export function runFilePath(home: string, projectId: string, worktreePath: string): string {
@@ -115,10 +126,26 @@ export function deleteRunRecord(home: string, projectId: string, worktreePath: s
   if (existsSync(path)) unlinkSync(path)
 }
 
-export function isPidAlive(pid: number): boolean {
+// A PID alone can identify a different process after the original server exits.
+export function processStart(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null
   try {
-    process.kill(pid, 0)
-    return true
+    const result = exec(["ps", "-p", String(pid), "-o", "lstart="])
+    return result.exitCode === 0 ? result.stdout.trim() || null : null
+  } catch {
+    return null
+  }
+}
+
+export function isOwnedProcess(record: Pick<RunRecord, "pid" | "processStart">): boolean {
+  return !!record.processStart && processStart(record.pid) === record.processStart
+}
+
+async function isOwnedProcessAsync(record: Pick<RunRecord, "pid" | "processStart">): Promise<boolean> {
+  if (!record.processStart || !Number.isSafeInteger(record.pid) || record.pid <= 0) return false
+  try {
+    const result = await execAsync(["ps", "-p", String(record.pid), "-o", "lstart="])
+    return result.exitCode === 0 && result.stdout.trim() === record.processStart
   } catch {
     return false
   }
@@ -138,28 +165,54 @@ export function collectServers(opts: {
   projects: Project[]
   treesByProject: Map<string, GitWorktree[]>
 }): ServerRow[] {
-  const { home, projects, treesByProject } = opts
-  const allTrees = [...treesByProject.entries()].flatMap(([projectId, trees]) =>
-    trees.map((tree) => ({ projectId, tree })),
-  )
-  const trees = allTrees.map((entry) => entry.tree)
-
+  const { home, treesByProject } = opts
   const owned = loadRunRecords(home).map((record) => {
-    if (!record.exited && !isPidAlive(record.pid)) {
+    if (!record.exited && !isOwnedProcess(record)) {
       record.exited = true
       saveRunRecord(home, record)
     }
     return record
   })
-  const ownedPids = new Set(owned.filter((record) => !record.exited).map((record) => record.pid))
-
   const listeners = listListeners()
   const cwds = listCwds(listeners.map((listener) => listener.pid))
+  return serverRows(owned, listeners, cwds, treesByProject)
+}
+
+export async function collectServersAsync(opts: {
+  home: string
+  projects: Project[]
+  treesByProject: Map<string, GitWorktree[]>
+}): Promise<ServerRow[]> {
+  const owned = loadRunRecords(opts.home)
+  const [valid, listeners] = await Promise.all([
+    Promise.all(owned.map((record) => record.exited ? false : isOwnedProcessAsync(record))),
+    listListenersAsync(),
+  ])
+  for (const [index, record] of owned.entries()) {
+    if (!record.exited && !valid[index]) {
+      record.exited = true
+      saveRunRecord(opts.home, record)
+    }
+  }
+  const cwds = await listCwdsAsync(listeners.map((listener) => listener.pid))
+  return serverRows(owned, listeners, cwds, opts.treesByProject)
+}
+
+function serverRows(
+  owned: RunRecord[], listeners: Listener[], cwds: Map<number, string>,
+  treesByProject: Map<string, GitWorktree[]>,
+): ServerRow[] {
+  const allTrees = [...treesByProject.entries()].flatMap(([projectId, trees]) =>
+    trees.map((tree) => ({ projectId, tree })),
+  )
+  const trees = allTrees.map((entry) => entry.tree)
+  const ownedPids = new Set(owned.filter((record) => !record.exited).map((record) => record.pid))
   const rows: ServerRow[] = []
 
   for (const record of owned) {
     rows.push({
       pid: record.pid,
+      processStart: record.processStart,
       port: record.port,
       command: record.command.join(" "),
       worktreePath: record.worktreePath,
@@ -207,7 +260,7 @@ export function startServer(opts: {
 }): RunRecord {
   const { home, project, worktree, usedPorts } = opts
   const existing = loadRunRecords(home).find(
-    (record) => record.worktreePath === worktree.path && !record.exited && isPidAlive(record.pid),
+    (record) => record.worktreePath === worktree.path && !record.exited && isOwnedProcess(record),
   )
   if (existing) return existing
 
@@ -242,8 +295,14 @@ export function startServer(opts: {
   } finally {
     closeSync(logFd)
   }
+  const started = processStart(proc.pid)
+  if (!started) {
+    proc.kill()
+    throw new Error("Could not verify the started server process")
+  }
   const record: RunRecord = {
     pid: proc.pid,
+    processStart: started,
     port,
     projectId: project.id,
     worktreePath: worktree.path,
@@ -259,6 +318,14 @@ export function startServer(opts: {
 
 export function stopServer(home: string, row: ServerRow): void {
   if (row.state === "failed") return
+  if (row.owned) {
+    const record = loadRunRecords(home).find((item) =>
+      item.projectId === row.projectId && item.worktreePath === row.worktreePath,
+    )
+    if (!record || record.exited || record.pid !== row.pid || record.processStart !== row.processStart || !isOwnedProcess(record)) {
+      throw new Error("Server process changed. Refresh before stopping it.")
+    }
+  }
   killProcessTree(row.pid)
   if (row.owned) deleteRunRecord(home, row.projectId, row.worktreePath)
 }

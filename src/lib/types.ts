@@ -36,6 +36,7 @@ export type GitWorktree = {
 export type RunRecord = {
   exited?: boolean
   pid: number
+  processStart?: string
   port: number
   projectId: string
   worktreePath: string
@@ -54,6 +55,7 @@ export type Listener = {
 export type ServerRow = {
   state?: "starting" | "running" | "failed"
   pid: number
+  processStart?: string
   port: number
   command: string
   worktreePath: string

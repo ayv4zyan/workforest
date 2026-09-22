@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   symlinkSync,
+  unlinkSync,
 } from "node:fs"
 import { dirname, join, relative } from "node:path"
 import { exec } from "./exec.ts"
@@ -105,7 +106,24 @@ export function bunInstall(cwd: string): void {
   }
 }
 
-export function setupWorktreeDeps(mainRoot: string, treeRoot: string): string[] {
+async function bunInstallAsync(cwd: string): Promise<void> {
+  const child = Bun.spawn(["bun", "install"], { cwd, stdout: "pipe", stderr: "pipe" })
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; child.kill() }, 120_000)
+  try {
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ])
+    if (timedOut) throw new Error(`bun install timed out in ${cwd}`)
+    if (code !== 0) throw new Error(stderr.trim() || stdout.trim() || `bun install failed in ${cwd}`)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function prepareWorktreeDeps(mainRoot: string, treeRoot: string): { notes: string[]; installDirs: Set<string> } {
   const notes = copyEnvFiles(mainRoot, treeRoot)
   const moduleDirs = findNodeModulesDirs(mainRoot)
   const installDirs = new Set<string>()
@@ -117,20 +135,36 @@ export function setupWorktreeDeps(mainRoot: string, treeRoot: string): string[] 
     const treePkg = pkgRel === "." ? treeRoot : join(treeRoot, pkgRel)
     if (!existsSync(treePkg)) continue
     const dest = join(treeRoot, rel)
-    if (existsSync(dest)) continue
     if (lockfilesMatch(mainPkg, treePkg)) {
+      if (existsSync(dest)) continue
       mkdirSync(dirname(dest), { recursive: true })
       symlinkSync(mainModules, dest)
       notes.push(`linked ${rel}`)
     } else {
+      if (existsSync(dest) && lstatSync(dest).isSymbolicLink()) unlinkSync(dest)
       installDirs.add(treePkg)
       notes.push(`lockfile differs in ${pkgRel === "." ? "root" : pkgRel}`)
     }
   }
 
   if (moduleDirs.length === 0) installDirs.add(treeRoot)
+  return { notes, installDirs }
+}
+
+export function setupWorktreeDeps(mainRoot: string, treeRoot: string): string[] {
+  const { notes, installDirs } = prepareWorktreeDeps(mainRoot, treeRoot)
   for (const dir of installDirs) {
     bunInstall(dir)
+    const rel = relative(treeRoot, dir)
+    notes.push(`bun install in ${rel || "."}`)
+  }
+  return notes
+}
+
+export async function setupWorktreeDepsAsync(mainRoot: string, treeRoot: string): Promise<string[]> {
+  const { notes, installDirs } = prepareWorktreeDeps(mainRoot, treeRoot)
+  for (const dir of installDirs) {
+    await bunInstallAsync(dir)
     const rel = relative(treeRoot, dir)
     notes.push(`bun install in ${rel || "."}`)
   }

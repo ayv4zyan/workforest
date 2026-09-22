@@ -55,9 +55,17 @@ export function listWorktrees(repoPath: string): GitWorktree[] {
   return parseWorktreeList(stdout)
 }
 
+export async function listWorktreesAsync(repoPath: string): Promise<GitWorktree[]> {
+  return parseWorktreeList(await execOkAsync(["git", "worktree", "list", "--porcelain"], { cwd: repoPath }))
+}
+
 export function isDirty(worktreePath: string): boolean {
   const stdout = gitOk(worktreePath, ["status", "--porcelain"])
   return stdout.trim().length > 0
+}
+
+export async function isDirtyAsync(worktreePath: string): Promise<boolean> {
+  return (await execOkAsync(["git", "status", "--porcelain"], { cwd: worktreePath })).trim().length > 0
 }
 
 export function defaultStartPoint(repoPath: string): string {
