@@ -44,7 +44,7 @@ Override the data dir with `WORKFOREST_HOME` (default `~/.workforest`).
 | Paths | Shown for the selected row; long names truncate |
 | Search | `/` or bottom **search** — filter the focused pane by displayed name |
 | Logs / stop | Header **logs** and **■**; stop confirms before killing external PIDs |
-| Rename | Branch by default; optional folder move; or **auto** via Codex Luna |
+| Rename | Branch by default; optional folder move; or **auto** via Codex |
 
 If dependency setup fails, the new worktree stays available. Select it and use
 **Set up dependencies** in its row menu to retry.
@@ -89,8 +89,9 @@ Adding a project offers live directory suggestions for absolute, relative, and `
 
 ## Auto-rename (optional)
 
-Rename → **auto**, or `shift+r`. Needs `codex` on PATH, `codex login`, and Luna
-(`gpt-5.6-luna`). Suggests `agent/…` names from the branch diff (`.env*` and
+Rename → **auto**, or `shift+r`. Needs `codex` on PATH and `codex login`.
+Settings lists the visible models and reasoning levels from the local Codex model catalog;
+the initial model is `gpt-6-luna`. Suggests `agent/…` names from the branch diff (`.env*` and
 untracked contents excluded). Review, edit, submit — renames the branch by
 default, with an optional folder move. Esc cancels generation. Main and
 detached trees are skipped. 2-minute timeout.

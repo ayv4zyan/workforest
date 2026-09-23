@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { renameContext, parseSuggestedName, suggestWorktreeName } from "./auto-rename.ts"
-import { defaultRenamePrompt } from "./auto-rename-settings.ts"
+import { defaultRenamePrompt, resolveReasoning } from "./auto-rename-settings.ts"
 import { createWorktree, gitOk, listWorktrees } from "./git.ts"
 
 const dirs: string[] = []
@@ -88,7 +88,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
 `)
   expect(await suggestWorktreeName(repo, tree)).toBe("agent/fix-login-redirect")
   const request = JSON.parse(readFileSync(capture, "utf8"))
-  expect(request.args).toContain("gpt-5.6-luna")
+  expect(request.args).toContain("gpt-6-luna")
   expect(request.args).toContain('model_reasoning_effort="high"')
   expect(request.args).toContain("read-only")
   expect(request.prompt).toContain("fix login redirect")
@@ -112,7 +112,7 @@ await Bun.write(args[args.indexOf('--output-last-message') + 1], JSON.stringify(
   })).toBe("agent/ship-settings")
   const request = JSON.parse(readFileSync(capture, "utf8"))
   expect(request.args).toContain("gpt-5.6-luna")
-  expect(request.args).toContain('model_reasoning_effort="high"')
+  expect(request.args).toContain(`model_reasoning_effort="${resolveReasoning("gpt-5.6-luna", "ultra")}"`)
   expect(request.prompt.startsWith("Name only the purpose.\n")).toBe(true)
   expect(request.prompt).toContain("ship settings")
   expect(request.prompt).not.toContain(defaultRenamePrompt.slice(0, 40))

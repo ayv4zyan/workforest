@@ -6,7 +6,6 @@ import { ActionButton } from "./button.tsx"
 import {
   promptSoftLimit,
   reasoningChoices,
-  reasoningLabels,
   renameModels,
   type AutoRenameSettings,
 } from "../lib/auto-rename-settings.ts"
@@ -22,14 +21,14 @@ export function settingsFocusOrder(hasError: boolean): SettingsFocus[] {
 
 function choices(field: SettingsField, draft: AutoRenameSettings): { value: string; label: string }[] {
   if (field === "provider") return [{ value: "codex", label: "Codex" }]
-  if (field === "model") return renameModels.map((model) => ({ value: model, label: model }))
-  return reasoningChoices(draft.model).map((level) => ({ value: level, label: reasoningLabels[level] ?? level }))
+  if (field === "model") return renameModels(draft.model).map((model) => ({ value: model, label: model }))
+  return reasoningChoices(draft.model, undefined, draft.reasoning).map((level) => ({ value: level, label: level.charAt(0).toUpperCase() + level.slice(1) }))
 }
 
 function fieldValue(field: SettingsField, draft: AutoRenameSettings): string {
   if (field === "provider") return "Codex"
   if (field === "model") return draft.model
-  return reasoningLabels[draft.reasoning] ?? draft.reasoning
+  return draft.reasoning.charAt(0).toUpperCase() + draft.reasoning.slice(1)
 }
 
 export function SettingsForm(props: {

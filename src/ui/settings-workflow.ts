@@ -5,8 +5,8 @@ import type { SettingsField } from "./settings-modal.tsx"
 
 export function settingsOptions(field: SettingsField, current: Extract<Modal, { kind: "settings" }>): string[] {
   if (field === "provider") return ["codex"]
-  if (field === "model") return [...renameModels]
-  return [...reasoningChoices(current.model)]
+  if (field === "model") return renameModels(current.model)
+  return [...reasoningChoices(current.model, undefined, current.reasoning)]
 }
 
 export function createSettingsWorkflow(options: {
