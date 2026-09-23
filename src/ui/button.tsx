@@ -14,6 +14,7 @@ export function ActionButton(props: {
   disabled?: boolean
   active?: boolean
   compact?: boolean
+  align?: "left" | "center"
   onHover?: () => void
 }) {
   const renderer = useRenderer()
@@ -62,7 +63,7 @@ export function ActionButton(props: {
       paddingRight={1}
       flexDirection="row"
       alignItems="center"
-      justifyContent={props.trailingLabel ? "space-between" : "center"}
+      justifyContent={props.trailingLabel ? "space-between" : props.align === "left" ? "flex-start" : "center"}
       flexShrink={0}
       borderColor={border()}
       backgroundColor={bg()}

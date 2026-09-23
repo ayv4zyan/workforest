@@ -94,7 +94,7 @@ export function createContextMenu(options: {
           border borderColor={theme.accent} backgroundColor={theme.panel}
           onMouseDown={(event) => event.stopPropagation()}>
           <For each={options.actions()}>{(action, index) =>
-            <ActionButton id={action.id} label={action.label} compact variant={action.variant}
+            <ActionButton id={action.id} label={action.label} compact align="left" variant={action.variant}
               trailingLabel={action.trailingLabel}
               disabled={action.disabled} active={menuIndex() === index()} onPress={() => pressMenu(index())}
               onHover={() => {
@@ -119,7 +119,7 @@ export function createContextMenu(options: {
             border borderColor={theme.accent} backgroundColor={theme.panel}
             onMouseDown={(event) => event.stopPropagation()}>
             <For each={options.submenuActions()}>{(action, index) =>
-              <ActionButton id={action.id} label={action.label} compact disabled={action.disabled}
+              <ActionButton id={action.id} label={action.label} compact align="left" disabled={action.disabled}
                 active={submenuIndex() === index()} onPress={() => pressSubmenu(index())}
                 onHover={() => setSubmenuIndex(index())} />
             }</For>
