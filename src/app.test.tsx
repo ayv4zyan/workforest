@@ -587,8 +587,11 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
     writeFileSync(join(repo, "server.ts"), 'console.error("startup failed example"); process.exit(1)')
     await click("btn-start")
     await click("btn-submit")
-    await Bun.sleep(150)
-    await click("btn-refresh")
+    for (let i = 0; i < 20; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("Failed · view logs")) break
+    }
     expect(setup.captureCharFrame()).toContain("Failed · view logs")
     await click("btn-logs")
     expect(setup.captureCharFrame()).toContain("startup failed example")

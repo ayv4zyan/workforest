@@ -1,7 +1,8 @@
 import type { Accessor, Setter } from "solid-js"
 import { loadConfig, setProjectStartCommand } from "../lib/config.ts"
 import { loadPorts, pickPort } from "../lib/ports.ts"
-import { readServerLog, startServer, stopServer } from "../lib/servers.ts"
+import { listListeners, readServerLog, startServer, stopServer } from "../lib/servers.ts"
+import { vitePort } from "../lib/vite-port.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
 import type { Modal } from "./modal-model.ts"
 import type { TreeRow } from "./workspace.ts"
@@ -50,7 +51,8 @@ export function createServerWorkflow(options: {
 
   function openStartPort(project: Project, tree: GitWorktree) {
     const preferred = loadPorts(options.home())[tree.path]
-    const port = preferred ?? pickPort(workspace.servers().filter((row) => row.state !== "failed").map((row) => row.port), undefined, project.basePort)
+    const used = workspace.servers().filter((row) => row.state !== "failed").map((row) => row.port)
+    const port = preferred ?? pickPort([...used, ...listListeners().map((row) => row.port)], undefined, vitePort(tree.path) ?? 5173)
     dialog.show({ kind: "start", value: String(port), project, tree })
   }
 

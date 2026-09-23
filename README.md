@@ -37,7 +37,7 @@ Override the data dir with `WORKFOREST_HOME` (default `~/.workforest`).
 | Register a repo without moving it | `a` or **+** on the projects pane |
 | New linked worktree (dir name = branch name) | `n` or **+** on worktrees |
 | Ready-to-run tree | Copies `.env*`; symlinks `node_modules` when lockfiles match, else `bun install` |
-| Dev server on a chosen port | **▶** / start dialog — remembers last port, suggests from 5173 up |
+| Dev server on a chosen port | **▶** / start dialog — first suggests the Vite config port (or 5173), then remembers the last port |
 | Vite / Next | Passes `--port` / `-p`; sets `PORT` and `VITE_PORT` |
 | Other stacks | **Edit start command** on the project (shell or `bun run …`) |
 | See what’s running | Worktrees grouped **running** / **stopped** (collapsible); ○ stopped · Starting · Running `:port` · Failed; tags external / multi-server |
