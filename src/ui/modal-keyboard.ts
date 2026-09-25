@@ -16,6 +16,8 @@ type Context = {
     cancelModal: () => void
     acceptModal: () => void
     selectLog: (index: number) => void
+    toggleStopRow: (index: number) => void
+    stopPicked: (all: boolean) => void
     toggleSourceMenu: () => void
     pickSource: (name: string) => void
     toggleRenameFolder: () => void
@@ -42,7 +44,7 @@ type Context = {
 export function handleModalKey(key: KeyEvent, context: Context) {
   const {
     modal, setModal, modalFocus, setModalFocus, cycleModalFocus, handleModalArrow,
-    cancelModal, acceptModal, selectLog, toggleSourceMenu, pickSource, toggleRenameFolder, abortRename,
+    cancelModal, acceptModal, selectLog, toggleStopRow, stopPicked, toggleSourceMenu, pickSource, toggleRenameFolder, abortRename,
   } = context.model
   const {
     settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
@@ -100,6 +102,27 @@ export function handleModalKey(key: KeyEvent, context: Context) {
       if (modal()?.kind === "auto-rename") {
         key.preventDefault()
         if (["escape", "enter", "return"].includes(key.name)) abortRename()
+        return
+      }
+      const stopPicker = modal()
+      if (stopPicker?.kind === "stop-picker") {
+        key.preventDefault()
+        if (key.name === "escape") cancelModal()
+        else if (key.name === "tab") cycleModalFocus(key.shift ? -1 : 1)
+        else if (key.name === "up" || key.name === "down") {
+          if (modalFocus() !== "server") setModalFocus("server")
+          else setModal({ ...stopPicker, highlighted: (stopPicker.highlighted + (key.name === "up" ? -1 : 1) + stopPicker.rows.length) % stopPicker.rows.length })
+        } else if (key.name === "left" || key.name === "right") {
+          const buttons: ModalFocus[] = ["submit", "stop-all", "cancel"]
+          const index = buttons.indexOf(modalFocus())
+          if (index >= 0) setModalFocus(buttons[(index + (key.name === "left" ? -1 : 1) + buttons.length) % buttons.length]!)
+        } else if (["space", "return", "enter"].includes(key.name)) {
+          const focus = modalFocus()
+          if (focus === "server") toggleStopRow(stopPicker.highlighted)
+          else if (focus === "submit") stopPicked(false)
+          else if (focus === "stop-all") stopPicked(true)
+          else if (focus === "cancel") cancelModal()
+        }
         return
       }
       const openTreeModal = modal()

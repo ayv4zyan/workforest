@@ -47,7 +47,7 @@ export function App() {
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
   const [status, setStatus] = createSignal("")
   const {
-    setProjects, selectedProjectId, setSelectedProjectId,
+    setProjects, selectedProjectId, selectProject,
     selectedTreePath, setSelectedTreePath, focusedGroup, collapsedGroups, servers,
     filteredProjects, selectedProject, selectedTree,
     treeServers, activeServers, treeEntries, toggleGroup, pickEntry,
@@ -57,7 +57,7 @@ export function App() {
   const [modal, setModal] = createSignal<Modal | null>(null)
   const { openAddProject, openUnregister, submitAddProject, unregister } = createProjectWorkflow({
     home: dataDir,
-    workspace: { selectedProject, setSelectedProjectId, refresh },
+    workspace: { selectedProject, selectProject, refresh },
     dialog: { setModal, show: showModal },
     operation: { busy, setStatus, run: runOp },
   })
@@ -78,7 +78,7 @@ export function App() {
     autoRename, openDelete, submit: submitWorktree, deleteTree,
   } = createWorktreeWorkflow({
     home: dataDir, renderer,
-    workspace: { selectedProject, selectedTree, setSelectedProjectId, setSelectedTreePath,
+    workspace: { selectedProject, selectedTree, selectProject, setSelectedTreePath,
       loadTreesFor, pickTree, servers, refresh },
     dialog: { modal, setModal, setModalFocus, setHighlight: setSettingsHighlight, show: showModal },
     operation: { busy, setBusy, setStatus, run: runOp },
@@ -182,7 +182,7 @@ export function App() {
       const next = Math.max(0, Math.min(projectIndex() + delta, filteredProjects().length - 1))
       const project = filteredProjects()[next]
       if (!project || project.id === selectedProjectId()) return
-      setSelectedProjectId(project.id)
+      selectProject(project.id)
       loadTreesFor(project.id)
       return
     }
@@ -279,7 +279,30 @@ export function App() {
   function showModal(next: Modal) {
     setMenu(null)
     setModal(next)
-    setModalFocus("value" in next ? "input" : "submit")
+    setModalFocus(next.kind === "stop-picker" ? "server" : "value" in next ? "input" : "submit")
+  }
+
+  function toggleStopRow(index: number) {
+    setModal((current) => {
+      if (current?.kind !== "stop-picker" || index < 0 || index >= current.rows.length) return current
+      return {
+        ...current,
+        highlighted: index,
+        selected: current.selected.includes(index)
+          ? current.selected.filter((selected) => selected !== index)
+          : [...current.selected, index],
+      }
+    })
+    setModalFocus("server")
+  }
+
+  function stopPicked(all: boolean) {
+    const current = modal()
+    if (current?.kind !== "stop-picker") return
+    const rows = all ? current.rows : current.rows.filter((_, index) => current.selected.includes(index))
+    if (rows.length === 0) return
+    setModal(null)
+    stopRows(rows)
   }
 
   function cycleModalFocus(delta: number) {
@@ -343,7 +366,7 @@ export function App() {
     if (modal()) {
       handleModalKey(key, {
         model: { modal, setModal, modalFocus, setModalFocus, cycleModalFocus, handleModalArrow,
-          cancelModal, acceptModal, selectLog, toggleSourceMenu, pickSource, toggleRenameFolder,
+          cancelModal, acceptModal, selectLog, toggleStopRow, stopPicked, toggleSourceMenu, pickSource, toggleRenameFolder,
           abortRename },
         settings: { settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
           pickSettings, toggleSettings, saveSettings },
@@ -479,7 +502,7 @@ export function App() {
             busy={busy()} blocked={Boolean(modal() || menu())}
             query={queries().projects} projects={filteredProjects()} selectedId={selectedProjectId()}
             onFocus={() => focusPane("projects")} onAdd={openAddProject}
-            onSelect={(id) => { setSelectedProjectId(id); loadTreesFor(id) }}
+            onSelect={(id) => { selectProject(id); loadTreesFor(id) }}
             onActivate={() => focusPane("trees")}
             onMenu={(x, y) => openMenu("projects", x, y)}
             onListLayout={(node, height) => { projectList = node; setProjectListHeight(height) }}
@@ -573,7 +596,7 @@ export function App() {
         settings={settingsWorkflow}
         paths={pathWorkflow}
         actions={{ cancelModal, abortRename, submitModal, selectLog, toggleSourceMenu, pickSource,
-          toggleRenameFolder, acceptModal }}
+          toggleRenameFolder, toggleStopRow, stopPicked, acceptModal }}
       />
     </box>
   )

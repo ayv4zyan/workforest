@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand } from "./config.ts"
+import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand, setSelectedProjectId } from "./config.ts"
 import { execOk } from "./exec.ts"
 
 function initRepo(): string {
@@ -48,4 +48,16 @@ test("project pane width persists without changing projects", () => {
   const config = loadConfig(home)
   expect(config.ui?.projectPaneWidth).toBe(42)
   expect(config.projects.map((row) => row.id)).toEqual([project.id])
+})
+
+test("selected project persists and falls back when removed", () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-selected-home-"))
+  const first = addProject(home, initRepo())
+  const second = addProject(home, initRepo())
+  setProjectPaneWidth(home, 42)
+  setSelectedProjectId(home, second.id)
+  expect(loadConfig(home).ui).toEqual({ projectPaneWidth: 42, selectedProjectId: second.id })
+  expect(() => setSelectedProjectId(home, "missing")).toThrow("Unknown project")
+  removeProject(home, second.id)
+  expect(loadConfig(home).ui).toEqual({ projectPaneWidth: 42, selectedProjectId: first.id })
 })

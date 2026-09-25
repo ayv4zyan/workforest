@@ -2,7 +2,7 @@ import { serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
 import { settingsFocusOrder, type SettingsFocus } from "./settings-modal.tsx"
 
-export type ModalFocus = "input" | "source" | "rename-folder" | "submit" | "cancel" | SettingsFocus
+export type ModalFocus = "input" | "source" | "rename-folder" | "server" | "stop-all" | "submit" | "cancel" | SettingsFocus
 
 export type Modal =
   | { kind: "settings"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
@@ -13,6 +13,7 @@ export type Modal =
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
   | { kind: "stop"; rows: ServerRow[] }
+  | { kind: "stop-picker"; rows: ServerRow[]; selected: number[]; highlighted: number; treeName: string }
   | { kind: "start-command"; value: string; error?: string; project: Project; tree?: GitWorktree }
   | { kind: "start"; value: string; error?: string; project: Project; tree: GitWorktree }
   | { kind: "logs"; rows: ServerRow[]; selectedIndex: number; text: string }
@@ -21,6 +22,7 @@ export function modalFocusables(current: Modal): ModalFocus[] {
   if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))
   if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
   if (current.kind === "new-tree") return ["input", "source", "submit", "cancel"]
+  if (current.kind === "stop-picker") return ["server", "submit", "stop-all", "cancel"]
   return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
 }
 
@@ -50,6 +52,7 @@ export function modalTitle(current: Modal): string {
     case "delete": return "delete worktree"
     case "unregister": return "remove project from list"
     case "stop": return "stop servers"
+    case "stop-picker": return `stop servers · ${current.treeName}`
     case "start-command": return "project start command"
     case "start": return "start server"
     case "logs": return "server logs"
@@ -74,6 +77,7 @@ export function modalBody(current: Modal, selectedProject: Project | null, selec
     case "start": return `Port (1024–65535). Command: ${current.project.startCommand}`
     case "logs": return ""
     case "stop": return `Stop ${current.rows.map((row) => `:${row.port} (pid ${row.pid}, ${row.owned ? "Workforest" : "external"})`).join(", ")}? External processes were started outside Workforest.`
+    case "stop-picker": return "Select the servers to stop."
   }
 }
 
@@ -99,6 +103,7 @@ export function modalSize(current: Modal, terminalWidth: number, terminalHeight:
     : current.kind === "start-command" ? 88 : 76
   const preferredHeight = current.kind === "logs"
     ? Math.floor(terminalHeight * 0.7)
+    : current.kind === "stop-picker" ? Math.min(22, 14 + current.rows.length)
     : current.kind === "settings" ? terminalHeight - 4
     : current.kind === "add-project" ? 12 + pathListHeight : current.kind === "new-tree" ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
   const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))

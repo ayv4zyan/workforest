@@ -1,6 +1,6 @@
-import { For, Show, createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
 import { useRenderer } from "@opentui/solid"
-import type { InputRenderable } from "@opentui/core"
+import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import type { Project, ServerRow } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
@@ -93,6 +93,63 @@ function LogsView(props: {
   </>
 }
 
+function StopPickerView(props: {
+  draft: Extract<Modal, { kind: "stop-picker" }>
+  focus: ModalFocus
+  onToggle: (index: number) => void
+  onFocus: (focus: ModalFocus) => void
+  onStop: (all: boolean) => void
+  onCancel: () => void
+}) {
+  const renderer = useRenderer()
+  let list: ScrollBoxRenderable | undefined
+  createEffect(() => {
+    if (props.focus === "server") list?.scrollChildIntoView(`stop-server-${props.draft.highlighted}`)
+  })
+  return <>
+    <scrollbox ref={(node) => { list = node }} flexGrow={1} minHeight={1}>
+      <For each={props.draft.rows}>{(row, index) => {
+        const highlighted = () => props.focus === "server" && props.draft.highlighted === index()
+        const checked = () => props.draft.selected.includes(index())
+        return <box
+          id={`stop-server-${index()}`}
+          height={1}
+          flexShrink={0}
+          backgroundColor={highlighted() ? theme.selectedBg : theme.panel}
+          onMouseOver={() => renderer.setMousePointer("pointer")}
+          onMouseOut={() => renderer.setMousePointer("default")}
+          onMouseDown={(event) => {
+            event.stopPropagation()
+            if (event.button === 0) props.onToggle(index())
+          }}
+        >
+          <text height={1} width="100%" wrapMode="none" truncate selectable={false}
+            fg={highlighted() ? theme.selectedFg : theme.text}>
+            {`${checked() ? "[x]" : "[ ]"} :${row.port}  ${row.command}  ·  ${row.owned ? "Workforest" : "external"}  ·  pid ${row.pid}`}
+          </text>
+        </box>
+      }}</For>
+    </scrollbox>
+    <Show when={props.draft.rows.some((row) => !row.owned)}>
+      <text height={1} wrapMode="none" truncate fg={theme.muted} selectable={false}>
+        External servers were started outside Workforest.
+      </text>
+    </Show>
+    <text height={1} wrapMode="none" truncate fg={theme.muted} selectable={false}>
+      ↑↓ choose · Space select · Tab actions
+    </text>
+    <box flexDirection="row" justifyContent="flex-end" gap={1}>
+      <ActionButton id="btn-stop-selected" label={`stop selected (${props.draft.selected.length})`}
+        variant="danger" disabled={props.draft.selected.length === 0} active={props.focus === "submit"}
+        onPress={() => { props.onFocus("submit"); props.onStop(false) }} />
+      <ActionButton id="btn-stop-all" label="stop all" variant="danger" active={props.focus === "stop-all"}
+        onPress={() => { props.onFocus("stop-all"); props.onStop(true) }} />
+      <ActionButton id="btn-cancel" label="cancel" active={props.focus === "cancel"}
+        onPress={() => { props.onFocus("cancel"); props.onCancel() }} />
+    </box>
+  </>
+}
+
 type ModalLayerProps = {
   model: {
     modal: Accessor<Modal | null>
@@ -114,6 +171,8 @@ type ModalLayerProps = {
     abortRename: () => void
     submitModal: (value: string) => void
     selectLog: (index: number) => void
+    toggleStopRow: (index: number) => void
+    stopPicked: (all: boolean) => void
     toggleSourceMenu: () => void
     pickSource: (name: string) => void
     toggleRenameFolder: () => void
@@ -199,6 +258,10 @@ export function ModalLayer(props: ModalLayerProps) {
               <LogsView draft={current() as Extract<Modal, { kind: "logs" }>}
                 width={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).width}
                 onSelect={props.actions.selectLog} onClose={cancelModal} />
+            ) : current().kind === "stop-picker" ? (
+              <StopPickerView draft={current() as Extract<Modal, { kind: "stop-picker" }>}
+                focus={modalFocus()} onToggle={props.actions.toggleStopRow} onFocus={setModalFocus}
+                onStop={props.actions.stopPicked} onCancel={cancelModal} />
             ) : current().kind === "auto-rename" ? (
               <>
                 <RenameProgress />

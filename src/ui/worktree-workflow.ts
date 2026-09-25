@@ -17,7 +17,7 @@ export function createWorktreeWorkflow(options: {
   workspace: {
     selectedProject: () => Project | null
     selectedTree: () => TreeRow | null
-    setSelectedProjectId: Setter<string | null>
+    selectProject: (projectId: string) => void
     setSelectedTreePath: Setter<string | null>
     loadTreesFor: (projectId: string) => void
     pickTree: (path: string) => void
@@ -137,7 +137,7 @@ export function createWorktreeWorkflow(options: {
     try {
       const name = await suggestWorktreeName(project.path, tree, request.signal, loadAutoRename(options.home()))
       request.signal.throwIfAborted()
-      workspace.setSelectedProjectId(project.id)
+      workspace.selectProject(project.id)
       workspace.loadTreesFor(project.id)
       workspace.pickTree(tree.path)
       dialog.show({ kind: "rename", value: name, target: { project, tree } })
@@ -198,7 +198,7 @@ export function createWorktreeWorkflow(options: {
     const tree = workspace.selectedTree()
     if (!project || !tree) return
     void operation.run("deleting", async () => {
-      for (const row of serversForWorktree(workspace.servers(), tree.path).filter((row) => row.state !== "failed")) stopServer(options.home(), row)
+      for (const row of serversForWorktree(workspace.servers(), tree.path).filter((row) => row.state !== "failed")) await stopServer(options.home(), row)
       await removeWorktreeAsync({ repoPath: project.path, tree, force: tree.dirty })
       forgetWorktreeRuntime(options.home(), project.id, tree.path)
       return `deleted ${tree.displayName}`

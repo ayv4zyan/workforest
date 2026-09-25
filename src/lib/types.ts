@@ -18,6 +18,7 @@ export type Config = {
   projects: Project[]
   ui?: {
     projectPaneWidth?: number
+    selectedProjectId?: string
   }
   autoRename?: AutoRenameConfig
 }

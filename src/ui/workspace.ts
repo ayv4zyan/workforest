@@ -1,5 +1,5 @@
 import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js"
-import { loadConfig } from "../lib/config.ts"
+import { loadConfig, setSelectedProjectId as saveSelectedProjectId } from "../lib/config.ts"
 import { isDirtyAsync, listWorktreesAsync, worktreeDisplayName } from "../lib/git.ts"
 import { collectServersAsync, serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
@@ -92,6 +92,15 @@ export function createWorkspace(options: {
     setSelectedTreePath(path)
   }
 
+  function selectProject(projectId: string) {
+    setSelectedProjectId(projectId)
+    try {
+      saveSelectedProjectId(options.home(), projectId)
+    } catch (error) {
+      options.onError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   function pickEntry(index: number) {
     const entry = treeEntries()[index]
     if (!entry) return
@@ -110,10 +119,13 @@ export function createWorkspace(options: {
     refreshPending = true
     try {
       const config = loadConfig(options.home())
-      setProjects(config.projects)
       const currentId = config.projects.some((project) => project.id === selectedProjectId())
-        ? selectedProjectId() : (config.projects[0]?.id ?? null)
+        ? selectedProjectId()
+        : config.projects.some((project) => project.id === config.ui?.selectedProjectId)
+          ? config.ui!.selectedProjectId!
+          : (config.projects[0]?.id ?? null)
       setSelectedProjectId(currentId)
+      setProjects(config.projects)
       const entriesPending = config.projects.map(async (project) => {
         try { return [project.id, await listWorktreesAsync(project.path)] as const }
         catch { return [project.id, [] as GitWorktree[]] as const }
@@ -155,7 +167,7 @@ export function createWorkspace(options: {
   }
 
   return {
-    projects, setProjects, selectedProjectId, setSelectedProjectId,
+    projects, setProjects, selectedProjectId, selectProject,
     trees, setTrees, selectedTreePath, setSelectedTreePath,
     focusedGroup, collapsedGroups, servers, filteredProjects, filteredTrees,
     selectedProject, selectedTree, treeServers, activeServers, treeEntries,

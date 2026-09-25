@@ -7,7 +7,7 @@ export function createProjectWorkflow(options: {
   home: () => string
   workspace: {
     selectedProject: () => Project | null
-    setSelectedProjectId: Setter<string | null>
+    selectProject: (projectId: string) => void
     refresh: () => Promise<void>
   }
   dialog: {
@@ -39,7 +39,7 @@ export function createProjectWorkflow(options: {
   function submitAddProject(value: string) {
     if (!value) throw new Error("path required")
     const project = addProject(options.home(), value)
-    workspace.setSelectedProjectId(project.id)
+    workspace.selectProject(project.id)
     dialog.setModal(null)
     void workspace.refresh()
     operation.setStatus(`added ${project.name}`)

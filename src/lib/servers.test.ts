@@ -138,7 +138,7 @@ test("saved project command runs from a linked worktree with the chosen port", a
     expect(response).toBe("linked command")
     expect(record.worktreePath).toBe(linked)
   } finally {
-    if (record) stopServer(home, { ...record, command: "bun local", owned: true })
+    if (record) await stopServer(home, { ...record, command: "bun local", owned: true })
     rmSync(root, { recursive: true, force: true })
   }
 })
@@ -170,8 +170,40 @@ await Bun.write("actual-port.json", JSON.stringify({port: server.port, args}))
     expect(actual?.args).toContain("--strictPort")
     expect(await (await fetch(`http://127.0.0.1:${record.port}`)).text()).toBe("vite fixture")
   } finally {
-    if (record) stopServer(home, { ...record, command: "bun local", owned: true })
+    if (record) await stopServer(home, { ...record, command: "bun local", owned: true })
     rmSync(root, {recursive: true, force: true})
+  }
+})
+
+test("stopServer reports a listener that remains after SIGTERM", async () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-stubborn-server-"))
+  const home = join(root, "home")
+  writeFileSync(join(root, "server.ts"), `
+process.on("SIGTERM", () => {})
+Bun.serve({ port: Number(process.env.PORT), hostname: "127.0.0.1", fetch: () => new Response("running") })
+`)
+  const spare = Bun.serve({ port: 0, fetch: () => new Response("spare") })
+  const port = spare.port!
+  spare.stop(true)
+  const proc = Bun.spawn([process.execPath, "server.ts"], {
+    cwd: root, env: { ...process.env, PORT: String(port) }, stdout: "ignore", stderr: "ignore",
+  })
+  try {
+    let ready = false
+    for (let i = 0; i < 40; i++) {
+      try { ready = (await (await fetch(`http://127.0.0.1:${port}`)).text()) === "running" } catch {}
+      if (ready) break
+      await Bun.sleep(25)
+    }
+    expect(ready).toBe(true)
+    await expect(stopServer(home, {
+      pid: proc.pid, port, command: "bun server.ts", worktreePath: root,
+      projectId: "p", owned: false, state: "running",
+    })).rejects.toThrow(`Server :${port} is still running`)
+  } finally {
+    try { process.kill(proc.pid, "SIGKILL") } catch {}
+    await proc.exited
+    rmSync(root, { recursive: true, force: true })
   }
 })
 

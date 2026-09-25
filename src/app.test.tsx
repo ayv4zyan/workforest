@@ -189,6 +189,37 @@ test.serial("renders the workforest shell with clickable controls", async () => 
   }
 })
 
+test.serial("selected project survives an app restart", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-selected-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  process.env.WORKFOREST_HOME = home
+  for (const name of ["alpha", "beta"]) {
+    const repo = join(root, name)
+    mkdirSync(repo)
+    gitOk(repo, ["init", "-b", "main"])
+    gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+    addProject(home, repo)
+  }
+  let setup = await testRender(() => <App />, { width: 100, height: 24 })
+  try {
+    await paint(setup)
+    const beta = findText(setup.captureCharFrame(), "beta")
+    await setup.mockMouse.click(beta.x, beta.y)
+    await paint(setup)
+    expect(loadConfig(home).ui?.selectedProjectId).toBe("beta")
+    setup.renderer.destroy()
+    setup = await testRender(() => <App />, { width: 100, height: 24 })
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("▶ beta")
+  } finally {
+    setup.renderer.destroy()
+    if (oldHome === undefined) delete process.env.WORKFOREST_HOME
+    else process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.serial("dragging the pane divider resizes and persists the projects pane", async () => {
   const home = mkdtempSync(join(tmpdir(), "wf-resize-"))
   process.env.WORKFOREST_HOME = home
@@ -606,25 +637,60 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
     await click("btn-next-log")
     expect(setup.captureCharFrame()).toContain("server ready")
     await click("btn-close-logs")
-    secondServer.kill()
+    await click("btn-start")
+    expect(setup.captureCharFrame()).toContain("Select the servers to stop.")
+    expect(setup.captureCharFrame()).toContain("stop selected (1)")
+    expect(setup.captureCharFrame()).toContain("stop all")
+    expect(secondServer.exitCode).toBeNull()
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("stop selected (2)")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("stop selected (1)")
+    await click("stop-server-0")
+    expect(setup.captureCharFrame()).toContain("stop selected (0)")
+    await click(`stop-server-${externalIndex}`)
+    expect(setup.captureCharFrame()).toContain("stop selected (1)")
+    await click("btn-stop-selected")
+    expect(findById(setup.renderer.root, "modal-dialog")).toBeUndefined()
+    for (let i = 0; i < 40; i++) {
+      await Bun.sleep(50)
+      await paint(setup)
+      if (setup.captureCharFrame().includes("stopped 1 server(s)")) break
+    }
+    expect(setup.captureCharFrame()).toContain("stopped 1 server(s)")
+    expect(setup.captureCharFrame()).not.toContain("2 servers")
+    expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
     await secondServer.exited
     secondServer = undefined
     setup.renderer.resize(160, 36)
     await paint(setup)
+    secondServer = Bun.spawn([process.execPath, "server.ts"], {
+      cwd: repo, env: { ...process.env, PORT: String(secondPort) }, stdout: "ignore", stderr: "ignore",
+    })
     for (let i = 0; i < 20; i++) {
       await Bun.sleep(50)
       await click("btn-refresh")
-      if (!setup.captureCharFrame().includes("2 servers")) break
+      if (setup.captureCharFrame().includes("2 servers")) break
     }
-    expect(setup.captureCharFrame()).not.toContain("2 servers")
+    expect(setup.captureCharFrame()).toContain("2 servers")
     await click("btn-start")
-    for (let i = 0; i < 20; i++) {
+    setup.mockInput.pressTab()
+    setup.mockInput.pressTab()
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    for (let i = 0; i < 40; i++) {
       await Bun.sleep(50)
-      await click("btn-refresh")
-      if (setup.captureCharFrame().includes("○")) break
+      await paint(setup)
+      if (setup.captureCharFrame().includes("stopped 2 server(s)")) break
     }
+    expect(setup.captureCharFrame()).toContain("stopped 2 server(s)")
     expect(setup.captureCharFrame()).toContain("○")
     expect(loadRunRecords(home)).toEqual([])
+    await secondServer.exited
+    secondServer = undefined
     writeFileSync(join(repo, "server.ts"), 'console.error("startup failed example"); process.exit(1)')
     await click("btn-start")
     await click("btn-submit")
@@ -665,7 +731,7 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
     occupied.stop(true)
     external?.kill()
     for (const row of collectServers({ home, projects: [project], treesByProject: new Map([[project.id, listWorktrees(repo)]]) })) {
-      stopServer(home, row)
+      await stopServer(home, row)
     }
     process.env.WORKFOREST_HOME = oldHome
     rmSync(root, { recursive: true, force: true })

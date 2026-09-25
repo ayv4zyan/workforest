@@ -22,7 +22,9 @@ function isConfig(value: unknown): value is Config {
     (project.startCommand === undefined || typeof project.startCommand === "string"))) return false
   if (value.ui !== undefined && (!isRecord(value.ui) ||
     (value.ui.projectPaneWidth !== undefined &&
-      (typeof value.ui.projectPaneWidth !== "number" || !Number.isFinite(value.ui.projectPaneWidth))))) return false
+      (typeof value.ui.projectPaneWidth !== "number" || !Number.isFinite(value.ui.projectPaneWidth))) ||
+    (value.ui.selectedProjectId !== undefined &&
+      (typeof value.ui.selectedProjectId !== "string" || value.ui.selectedProjectId.length === 0)))) return false
   return true
 }
 
@@ -65,6 +67,14 @@ export function setProjectPaneWidth(home: string, width: number): void {
   saveConfig(home, config)
 }
 
+export function setSelectedProjectId(home: string, projectId: string): void {
+  const config = loadConfig(home)
+  if (!config.projects.some((project) => project.id === projectId)) throw new Error(`Unknown project "${projectId}"`)
+  if (config.ui?.selectedProjectId === projectId) return
+  config.ui = { ...config.ui, selectedProjectId: projectId }
+  saveConfig(home, config)
+}
+
 export function addProject(home: string, rawPath: string, name?: string): Project {
   const expanded = expandPath(rawPath)
   if (!isGitRepo(expanded)) {
@@ -104,7 +114,10 @@ export function removeProject(home: string, projectId: string): void {
   if (next.length === config.projects.length) {
     throw new Error(`Unknown project "${projectId}"`)
   }
-  saveConfig(home, { ...config, projects: next })
+  const ui = config.ui?.selectedProjectId === projectId
+    ? { ...config.ui, selectedProjectId: next[0]?.id }
+    : config.ui
+  saveConfig(home, { ...config, projects: next, ui })
 }
 
 export function expandPath(input: string): string {

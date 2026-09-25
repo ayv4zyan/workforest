@@ -54,8 +54,15 @@ export function createServerWorkflow(options: {
   }
 
   function stopRows(rows: ServerRow[]) {
-    void operation.run("stopping", () => {
-      for (const row of rows) stopServer(options.home(), row)
+    void operation.run("stopping", async () => {
+      const results = await Promise.allSettled(rows.map((row) => stopServer(options.home(), row)))
+      const failures = results.flatMap((result, index) => result.status === "rejected"
+        ? [`:${rows[index]!.port} (${result.reason instanceof Error ? result.reason.message : String(result.reason)})`]
+        : [])
+      if (failures.length) {
+        await operation.refresh()
+        throw new Error(`Failed to stop ${failures.join(", ")}`)
+      }
       return `stopped ${rows.length} server(s)`
     })
   }
@@ -77,6 +84,10 @@ export function createServerWorkflow(options: {
     }
     const running = workspace.activeServers()
     if (running.length > 0) {
+      if (running.length > 1) {
+        dialog.show({ kind: "stop-picker", rows: running, selected: [0], highlighted: 0, treeName: tree.displayName })
+        return
+      }
       if (running.some((row) => !row.owned)) dialog.show({ kind: "stop", rows: running })
       else stopRows(running)
       return

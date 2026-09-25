@@ -156,9 +156,45 @@ export function killProcessTree(pid: number): void {
   exec(["pkill", "-TERM", "-P", String(pid)])
   try {
     process.kill(pid, "SIGTERM")
-  } catch {
-    // already gone
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
   }
+}
+
+function submittedLaunchdJob(pid: number): string | null {
+  if (process.platform !== "darwin" || !process.getuid) return null
+  const listed = exec(["launchctl", "list"])
+  if (listed.exitCode !== 0) return null
+  const line = listed.stdout.split("\n").find((entry) => entry.startsWith(`${pid}\t`))
+  const label = line?.trim().split(/\s+/)[2]
+  if (!label) return null
+  const details = exec(["launchctl", "print", `gui/${process.getuid()}/${label}`])
+  if (details.exitCode !== 0 || !/\btype = Submitted\b/.test(details.stdout) || !/\bproperties = [^\n]*\bkeepalive\b/.test(details.stdout)) return null
+  return label
+}
+
+async function waitForServerToStop(row: ServerRow): Promise<void> {
+  const root = resolve(row.worktreePath)
+  const deadline = Date.now() + 3000
+  let absentSince: number | null = null
+  while (Date.now() < deadline) {
+    const listeners = (await listListenersAsync()).filter((listener) => listener.port === row.port)
+    const cwds = await listCwdsAsync(listeners.map((listener) => listener.pid))
+    const running = listeners.some((listener) => {
+      if (listener.pid === row.pid) return true
+      const cwd = cwds.get(listener.pid)
+      const path = cwd && resolve(cwd)
+      return path === root || path?.startsWith(`${root}/`)
+    })
+    if (!running) {
+      absentSince ??= Date.now()
+      if (Date.now() - absentSince >= 400) return
+    } else {
+      absentSince = null
+    }
+    await Bun.sleep(100)
+  }
+  throw new Error(`Server :${row.port} is still running. It may be restarted by another process.`)
 }
 
 export function collectServers(opts: {
@@ -317,7 +353,7 @@ export function startServer(opts: {
   return record
 }
 
-export function stopServer(home: string, row: ServerRow): void {
+export async function stopServer(home: string, row: ServerRow): Promise<void> {
   if (row.state === "failed") return
   if (row.owned) {
     const record = loadRunRecords(home).find((item) =>
@@ -327,7 +363,14 @@ export function stopServer(home: string, row: ServerRow): void {
       throw new Error("Server process changed. Refresh before stopping it.")
     }
   }
-  killProcessTree(row.pid)
+  const launchdJob = !row.owned ? submittedLaunchdJob(row.pid) : null
+  if (launchdJob) {
+    const removed = exec(["launchctl", "remove", launchdJob])
+    if (removed.exitCode !== 0) throw new Error(`Could not stop launchd job ${launchdJob}: ${removed.stderr.trim() || removed.stdout.trim()}`)
+  } else {
+    killProcessTree(row.pid)
+  }
+  await waitForServerToStop(row)
   if (row.owned) deleteRunRecord(home, row.projectId, row.worktreePath)
 }
 
