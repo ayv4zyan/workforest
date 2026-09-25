@@ -43,3 +43,38 @@ test("first start uses Vite port; later starts retain the remembered port", () =
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test("logs stay separated by server, including discovered servers without captured output", () => {
+  const root = mkdtempSync(join(tmpdir(), "wf-server-logs-"))
+  const firstPath = join(root, "first.log")
+  const secondPath = join(root, "second.log")
+  writeFileSync(firstPath, "first server output")
+  writeFileSync(secondPath, "second server output")
+  const row = (pid: number, port: number, logPath?: string): ServerRow => ({
+    pid, port, logPath, command: "bun dev", worktreePath: root, projectId: "p", owned: Boolean(logPath), state: "running",
+  })
+  const [rows, setRows] = createSignal([row(1, 5173, firstPath), row(2, 5174, secondPath), row(3, 5175)])
+  const [modal, setModal] = createSignal<Modal | null>(null)
+  const [, setProjects] = createSignal<Project[]>([])
+  const workflow = createServerWorkflow({
+    home: () => root,
+    workspace: { selectedProject: () => null, selectedTree: () => null, servers: rows,
+      activeServers: rows, treeServers: rows, setProjects },
+    dialog: { modal, setModal, show: setModal },
+    operation: { busy: () => false, setStatus: () => {}, refresh: async () => {}, run: async () => {} },
+  })
+  try {
+    workflow.openLogs()
+    expect(modal()).toMatchObject({ kind: "logs", selectedIndex: 0, text: "first server output" })
+    workflow.selectLog(1)
+    expect(modal()).toMatchObject({ kind: "logs", selectedIndex: 1, text: "second server output" })
+    workflow.selectLog(2)
+    expect(modal()).toMatchObject({ kind: "logs", selectedIndex: 2, text: "Logs aren't available for servers started outside Workforest." })
+    setRows([row(1, 5173, firstPath)])
+    workflow.openLogs()
+    expect(modal()).toMatchObject({ kind: "logs", selectedIndex: 0, text: "first server output" })
+    expect((modal() as Extract<Modal, { kind: "logs" }>).rows).toHaveLength(1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

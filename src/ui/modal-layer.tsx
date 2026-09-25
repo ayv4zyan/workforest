@@ -18,6 +18,81 @@ function RenameProgress() {
   return <text id="rename-progress" height={1} fg={theme.accent} selectable={false}>{`${frames[frame()]} Generating a name…`}</text>
 }
 
+function LogsView(props: {
+  draft: Extract<Modal, { kind: "logs" }>
+  width: number
+  onSelect: (index: number) => void
+  onClose: () => void
+}) {
+  const renderer = useRenderer()
+  const selected = () => props.draft.rows[props.draft.selectedIndex]!
+  const label = (row: ServerRow) => `:${row.port} ${row.command}${row.owned ? "" : " · external"}`
+  const multiple = () => props.draft.rows.length > 1
+  const sidebar = () => multiple() && props.width >= 80
+  const step = (delta: number) => props.onSelect((props.draft.selectedIndex + delta + props.draft.rows.length) % props.draft.rows.length)
+
+  return <>
+    <box flexGrow={1} minHeight={0} flexDirection={sidebar() ? "row" : "column"}>
+      <Show when={sidebar()}>
+        <box width={23} flexShrink={0} flexDirection="column" paddingRight={1}>
+          <text height={1} fg={theme.muted} selectable={false}>Servers</text>
+          <scrollbox flexGrow={1}>
+            <For each={props.draft.rows}>{(row, index) => (
+              <box
+                id={`log-server-${index()}`}
+                height={1}
+                flexShrink={0}
+                backgroundColor={props.draft.selectedIndex === index() ? theme.selectedBg : theme.header}
+                onMouseOver={() => renderer.setMousePointer("pointer")}
+                onMouseOut={() => renderer.setMousePointer("default")}
+                onMouseDown={(event) => {
+                  event.stopPropagation()
+                  if (event.button === 0) props.onSelect(index())
+                }}
+              >
+                <text height={1} wrapMode="none" truncate selectable={false}
+                  fg={props.draft.selectedIndex === index() ? theme.selectedFg : theme.text}>
+                  {`${props.draft.selectedIndex === index() ? "▶" : " "} ${label(row)}`}
+                </text>
+              </box>
+            )}</For>
+          </scrollbox>
+        </box>
+      </Show>
+      <box flexGrow={1} minWidth={0} flexDirection="column" border={sidebar() ? ["left"] : []}
+        borderColor={theme.border} paddingLeft={sidebar() ? 1 : 0}>
+        <Show when={multiple() && !sidebar()}>
+          <box height={1} flexShrink={0} flexDirection="row" gap={1}>
+            <ActionButton id="btn-previous-log" label="‹" compact onPress={() => step(-1)} />
+            <box flexGrow={1} minWidth={0}>
+              <text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>
+                {`${props.draft.selectedIndex + 1}/${props.draft.rows.length}  ${label(selected())}`}
+              </text>
+            </box>
+            <ActionButton id="btn-next-log" label="›" compact onPress={() => step(1)} />
+          </box>
+        </Show>
+        <Show when={!multiple() || sidebar()}>
+          <text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>
+            {label(selected())}
+          </text>
+        </Show>
+        <scrollbox flexGrow={1} focused={true}>
+          <text fg={theme.text}>{props.draft.text}</text>
+        </scrollbox>
+      </box>
+    </box>
+    <box flexDirection="row" justifyContent="space-between" alignItems="center">
+      <Show when={multiple()} fallback={<text height={1} />}>
+        <text height={1} fg={theme.muted} selectable={false}>
+          {props.width >= 60 ? "Tab switches servers · ↑↓ scroll" : "Tab: server"}
+        </text>
+      </Show>
+      <ActionButton id="btn-close-logs" label="close" onPress={props.onClose} />
+    </box>
+  </>
+}
+
 type ModalLayerProps = {
   model: {
     modal: Accessor<Modal | null>
@@ -38,6 +113,7 @@ type ModalLayerProps = {
     cancelModal: () => void
     abortRename: () => void
     submitModal: (value: string) => void
+    selectLog: (index: number) => void
     toggleSourceMenu: () => void
     pickSource: (name: string) => void
     toggleRenameFolder: () => void
@@ -120,14 +196,9 @@ export function ModalLayer(props: ModalLayerProps) {
                 onCancel={cancelModal}
               />
             ) : current().kind === "logs" ? (
-              <>
-                <scrollbox flexGrow={1} focused={true}>
-                  <text fg={theme.text}>{(current() as Extract<Modal, { kind: "logs" }>).text}</text>
-                </scrollbox>
-                <box flexDirection="row" justifyContent="flex-end">
-                  <ActionButton id="btn-close-logs" label="close" onPress={cancelModal} />
-                </box>
-              </>
+              <LogsView draft={current() as Extract<Modal, { kind: "logs" }>}
+                width={modalSize(current(), dimensions().width, dimensions().height, pathListHeight()).width}
+                onSelect={props.actions.selectLog} onClose={cancelModal} />
             ) : current().kind === "auto-rename" ? (
               <>
                 <RenameProgress />

@@ -15,6 +15,7 @@ type Context = {
     handleModalArrow: (name: string, preventDefault: () => void) => void
     cancelModal: () => void
     acceptModal: () => void
+    selectLog: (index: number) => void
     toggleSourceMenu: () => void
     pickSource: (name: string) => void
     toggleRenameFolder: () => void
@@ -41,7 +42,7 @@ type Context = {
 export function handleModalKey(key: KeyEvent, context: Context) {
   const {
     modal, setModal, modalFocus, setModalFocus, cycleModalFocus, handleModalArrow,
-    cancelModal, acceptModal, toggleSourceMenu, pickSource, toggleRenameFolder, abortRename,
+    cancelModal, acceptModal, selectLog, toggleSourceMenu, pickSource, toggleRenameFolder, abortRename,
   } = context.model
   const {
     settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
@@ -121,6 +122,13 @@ export function handleModalKey(key: KeyEvent, context: Context) {
         if (["escape", "enter", "return"].includes(key.name)) {
           key.preventDefault()
           cancelModal()
+        } else if (["tab", "left", "right"].includes(key.name)) {
+          const current = modal()
+          if (current?.kind === "logs" && current.rows.length > 1) {
+            key.preventDefault()
+            const delta = key.name === "left" || (key.name === "tab" && key.shift) ? -1 : 1
+            selectLog((current.selectedIndex + delta + current.rows.length) % current.rows.length)
+          }
         }
         return
       }

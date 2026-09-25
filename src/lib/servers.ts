@@ -10,6 +10,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { basename, dirname, join, resolve } from "node:path"
 import { exec, execAsync } from "./exec.ts"
 import { logsDir, runDir } from "./home.ts"
@@ -276,7 +277,7 @@ export function startServer(opts: {
   }
   if (taken.has(port)) throw new Error(`Port ${port} is already in use. Choose another port.`)
   const command = startCommand ? spawnCustomCommand(worktree.path, startCommand, port) : spawnCommand(target!, port)
-  const logPath = join(logsDir(home), project.id, `${basename(worktree.path)}.log`)
+  const logPath = join(logsDir(home), project.id, `${basename(worktree.path)}-${port}-${randomUUID()}.log`)
   mkdirSync(dirname(logPath), { recursive: true })
   const logFd = openSync(logPath, "a")
   let proc: ReturnType<typeof Bun.spawn>

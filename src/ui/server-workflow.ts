@@ -32,14 +32,25 @@ export function createServerWorkflow(options: {
   const { workspace, dialog, operation } = options
 
   function openLogs() {
-    const path = workspace.treeServers().find((row) => row.logPath)?.logPath
-    if (!path) return
+    const rows = workspace.treeServers().filter((row) => row.state !== "failed" || row.logPath)
+    const selectedIndex = rows.findIndex((row) => row.logPath)
+    if (selectedIndex < 0) return
+    dialog.show({ kind: "logs", rows, selectedIndex, text: logText(rows[selectedIndex]!) })
+  }
+
+  function logText(row: ServerRow): string {
+    if (!row.logPath) return "Logs aren't available for servers started outside Workforest."
     try {
-      const text = readServerLog(path)
-      dialog.show({ kind: "logs", text: text || "No output yet." })
+      return readServerLog(row.logPath) || "No output yet."
     } catch (error) {
-      operation.setStatus(error instanceof Error ? error.message : String(error))
+      return `Couldn't read server logs: ${error instanceof Error ? error.message : String(error)}`
     }
+  }
+
+  function selectLog(index: number) {
+    const current = dialog.modal()
+    if (current?.kind !== "logs" || index < 0 || index >= current.rows.length) return
+    dialog.setModal({ ...current, selectedIndex: index, text: logText(current.rows[index]!) })
   }
 
   function stopRows(rows: ServerRow[]) {
@@ -106,5 +117,5 @@ export function createServerWorkflow(options: {
     return false
   }
 
-  return { openLogs, stopRows, toggleServer, openStartCommand, openStartPort, submit }
+  return { openLogs, selectLog, stopRows, toggleServer, openStartCommand, openStartPort, submit }
 }

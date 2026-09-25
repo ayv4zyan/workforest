@@ -15,7 +15,7 @@ export type Modal =
   | { kind: "stop"; rows: ServerRow[] }
   | { kind: "start-command"; value: string; error?: string; project: Project; tree?: GitWorktree }
   | { kind: "start"; value: string; error?: string; project: Project; tree: GitWorktree }
-  | { kind: "logs"; text: string }
+  | { kind: "logs"; rows: ServerRow[]; selectedIndex: number; text: string }
 
 export function modalFocusables(current: Modal): ModalFocus[] {
   if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))

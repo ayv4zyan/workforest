@@ -61,7 +61,7 @@ export function App() {
     dialog: { setModal, show: showModal },
     operation: { busy, setStatus, run: runOp },
   })
-  const { openLogs, stopRows, toggleServer, openStartCommand, submit: submitServer } = createServerWorkflow({
+  const { openLogs, selectLog, stopRows, toggleServer, openStartCommand, submit: submitServer } = createServerWorkflow({
     home: dataDir,
     workspace: { selectedProject, selectedTree, servers, activeServers, treeServers, setProjects },
     dialog: { modal, setModal, show: showModal },
@@ -343,7 +343,7 @@ export function App() {
     if (modal()) {
       handleModalKey(key, {
         model: { modal, setModal, modalFocus, setModalFocus, cycleModalFocus, handleModalArrow,
-          cancelModal, acceptModal, toggleSourceMenu, pickSource, toggleRenameFolder,
+          cancelModal, acceptModal, selectLog, toggleSourceMenu, pickSource, toggleRenameFolder,
           abortRename },
         settings: { settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
           pickSettings, toggleSettings, saveSettings },
@@ -572,7 +572,7 @@ export function App() {
           selectedProject, selectedTree, servers, setModalInput: (node) => { modalInput = node } }}
         settings={settingsWorkflow}
         paths={pathWorkflow}
-        actions={{ cancelModal, abortRename, submitModal, toggleSourceMenu, pickSource,
+        actions={{ cancelModal, abortRename, submitModal, selectLog, toggleSourceMenu, pickSource,
           toggleRenameFolder, acceptModal }}
       />
     </box>

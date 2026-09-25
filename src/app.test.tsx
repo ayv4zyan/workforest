@@ -523,6 +523,7 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
   writeFileSync(join(repo, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") }); console.log("server ready")')
   const project = addProject(home, repo)
   let external: ReturnType<typeof Bun.spawn> | undefined
+  let secondServer: ReturnType<typeof Bun.spawn> | undefined
   const occupied = Bun.serve({ port: 0, fetch: () => new Response("occupied") })
   const port = occupied.port!
   rememberPort(home, repo, port)
@@ -576,6 +577,46 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
     await click("btn-logs")
     expect(setup.captureCharFrame()).toContain("server ready")
     await click("btn-close-logs")
+    const spare = Bun.serve({ port: 0, fetch: () => new Response("spare") })
+    const secondPort = spare.port!
+    spare.stop(true)
+    secondServer = Bun.spawn([process.execPath, "server.ts"], {
+      cwd: repo, env: { ...process.env, PORT: String(secondPort) }, stdout: "ignore", stderr: "ignore",
+    })
+    for (let i = 0; i < 20; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("2 servers")) break
+    }
+    expect(setup.captureCharFrame()).toContain("2 servers")
+    await click("btn-logs")
+    expect(setup.captureCharFrame()).toContain("Servers")
+    expect(setup.captureCharFrame()).toContain("server ready")
+    const externalIndex = secondPort < port ? 0 : 1
+    await click(`log-server-${externalIndex}`)
+    expect(setup.captureCharFrame()).toContain("Logs aren't available for servers started outside Workforest.")
+    setup.mockInput.pressTab()
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("server ready")
+    await click(`log-server-${externalIndex}`)
+    setup.renderer.resize(80, 36)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "btn-next-log")).toBeTruthy()
+    expect(findById(setup.renderer.root, "log-server-0")).toBeUndefined()
+    await click("btn-next-log")
+    expect(setup.captureCharFrame()).toContain("server ready")
+    await click("btn-close-logs")
+    secondServer.kill()
+    await secondServer.exited
+    secondServer = undefined
+    setup.renderer.resize(160, 36)
+    await paint(setup)
+    for (let i = 0; i < 20; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (!setup.captureCharFrame().includes("2 servers")) break
+    }
+    expect(setup.captureCharFrame()).not.toContain("2 servers")
     await click("btn-start")
     for (let i = 0; i < 20; i++) {
       await Bun.sleep(50)
@@ -617,6 +658,10 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
 
   } finally {
     setup.renderer.destroy()
+    if (secondServer) {
+      secondServer.kill()
+      await secondServer.exited
+    }
     occupied.stop(true)
     external?.kill()
     for (const row of collectServers({ home, projects: [project], treesByProject: new Map([[project.id, listWorktrees(repo)]]) })) {
