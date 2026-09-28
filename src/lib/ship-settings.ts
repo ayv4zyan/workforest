@@ -3,7 +3,7 @@ import { resolveReasoning, type AutoRenameSettings } from "./auto-rename-setting
 import type { Config } from "./types.ts"
 
 export type ShipSettings = AutoRenameSettings
-export const defaultShipPrompt = `Prepare this branch for review. Write concise commit messages and a PR description explaining the problem, resulting behavior, and relevant validation.
+export const defaultShipPrompt = `Prepare this branch for review. Use tools to inspect the actual Git diff and relevant repository code; supplied Git evidence is a starting point, not a restriction on investigation. Write concise commit messages and a PR description explaining the problem, resulting behavior, and relevant validation.
 When a pre-push check fails, investigate the actual cause and make the smallest correct fix. Run the failing checks to verify the fix. Preserve the user's intended behavior. Never skip, disable, delete, or weaken checks merely to make them pass. Do not bypass hooks.
 Report brief, specific progress messages while working, including which check you are fixing. Do not make unrelated changes.`
 

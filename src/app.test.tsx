@@ -1502,7 +1502,7 @@ const args = process.argv.slice(2)
 await Bun.stdin.text()
 console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'SHIP_STATUS: reviewing checkout validation'}}))
 await Bun.sleep(600)
-await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({commitMessage:'Add feature',title:'Add feature',body:'Feature work',commitStatus:'recording feature',pushStatus:'sending checked branch',prStatus:'opening feature review'}))
+await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({ready:true,blocker:'',commitMessage:'Add feature',title:'Add feature',body:'Feature work',commitStatus:'recording feature',pushStatus:'sending checked branch',prStatus:'opening feature review'}))
 `)
   shim(process.platform === "darwin" ? "open" : "xdg-open", `await Bun.write(${JSON.stringify(opened)}, process.argv[2])`)
   process.env.PATH = `${bin}:${oldPath}`

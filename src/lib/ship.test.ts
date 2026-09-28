@@ -11,7 +11,7 @@ import { prePushFailed, shipWorktree } from "./ship.ts"
 
 const roots: string[] = []
 const originalPath = process.env.PATH
-const plan = { commitMessage: "User feature", title: "Improve feature", body: "Feature changes and validation.", commitStatus: "saving feature work", pushStatus: "sending branch through checks", prStatus: "opening review" }
+const plan = { ready: true, blocker: "", commitMessage: "User feature", title: "Improve feature", body: "Feature changes and validation.", commitStatus: "saving feature work", pushStatus: "sending branch through checks", prStatus: "opening review" }
 afterEach(() => {
   process.env.PATH = originalPath
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true })
@@ -238,3 +238,61 @@ test("cancelling a running configured pre-push hook keeps the user commit and cr
   expect(gitOk(repo, ["config", "core.hooksPath"]).trim()).toBe(hooks)
   expect(readFileSync(calls, "utf8")).not.toContain('"create"')
 }, 10000)
+
+test("Ship supplies committed, staged, unstaged and untracked changes to a no-tools writing prompt", async () => {
+  const { tree, bin, root } = fixture()
+  writeFileSync(join(tree.path, "widget.ts"), "export const widget = 'committed behavior'\n")
+  gitOk(tree.path, ["add", "."])
+  gitOk(tree.path, ["commit", "-m", "Implement widget rendering"])
+  writeFileSync(join(tree.path, "app.txt"), "staged behavior")
+  gitOk(tree.path, ["add", "."])
+  writeFileSync(join(tree.path, "app.txt"), "unstaged behavior")
+  writeFileSync(join(tree.path, "helper.ts"), "export const helper = 'untracked implementation'")
+  writeFileSync(join(tree.path, ".env.local"), "SECRET=must-not-be-supplied")
+  const capture = join(root, "prompt.txt")
+  script(join(bin, "codex"), `
+const args = process.argv.slice(2)
+await Bun.write(${JSON.stringify(capture)}, await Bun.stdin.text())
+await Bun.write(args[args.indexOf('--output-last-message')+1], ${JSON.stringify(JSON.stringify(plan))})
+`)
+  await runShipAgent({ cwd: tree.path, branch: "feature", base: "develop", settings: { ...defaultShip(), prompt: "Use only supplied data. Do not use tools." }, phase: "prepare", onProgress: () => {} })
+  const prompt = readFileSync(capture, "utf8")
+  for (const evidence of ["committed behavior", "Implement widget rendering", "staged behavior", "unstaged behavior", "untracked implementation"]) expect(prompt).toContain(evidence)
+  expect(prompt).not.toContain("must-not-be-supplied")
+  expect(prompt).not.toContain("diff --git a/develop.txt")
+  expect(prompt).toContain("No validation commands have run yet")
+  // A clean checkout still needs the entire already-committed PR diff.
+  gitOk(tree.path, ["add", "."])
+  gitOk(tree.path, ["commit", "-m", "Complete widget"])
+  await runShipAgent({ cwd: tree.path, branch: "feature", base: "develop", settings: defaultShip(), phase: "describe", validation: "Pre-push hook exited 0. widget tests: 3 passed.", onProgress: () => {} })
+  const cleanPrompt = readFileSync(capture, "utf8")
+  expect(cleanPrompt).toContain("committed behavior")
+  expect(cleanPrompt).toContain("untracked implementation")
+  expect(cleanPrompt).toContain("widget tests: 3 passed")
+  expect(cleanPrompt).not.toContain("must-not-be-supplied")
+})
+
+test("the final description receives successful hook evidence even when no repairs were needed", async () => {
+  const { tree, hook } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "implemented user feature")
+  hook('echo "quality checks: 12 passed"; exit 0')
+  const requests: ShipAgentRequest[] = []
+  await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) => {
+    requests.push(request)
+    return plan
+  } })
+  expect(requests.map((request) => request.phase)).toEqual(["prepare", "describe"])
+  expect(requests[1]!.validation).toContain("Pre-push hook exited 0")
+  expect(requests[1]!.validation).toContain("quality checks: 12 passed")
+  expect(requests[1]!.baseRef).toBe(gitOk(tree.path, ["rev-parse", "develop"]).trim())
+})
+
+test("an AI response that cannot review the diff stops without publishing a placeholder PR", async () => {
+  const { tree, calls } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "implemented feature")
+  await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) =>
+    request.phase === "describe" ? { ...plan, ready: false, blocker: "The diff was not readable", body: "No diff supplied" } : plan,
+  })).rejects.toThrow("could not review the changes")
+  expect(readFileSync(calls, "utf8")).not.toContain('"create"')
+  expect(() => parseShipPlan(JSON.stringify({ ...plan, ready: undefined }))).toThrow("review status")
+})

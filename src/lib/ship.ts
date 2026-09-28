@@ -4,22 +4,27 @@ import { join } from "node:path"
 import { execAsync, execOkAsync } from "./exec.ts"
 import { git, gitNetworkEnv } from "./git.ts"
 import { parsePullRequest, savePullRequest, type PullRequest } from "./branch-metadata.ts"
-import { runShipAgent, type ShipAgentRequest, type ShipPlan } from "./ship-agent.ts"
+import { parseShipPlan, runShipAgent, type ShipAgentRequest, type ShipPlan } from "./ship-agent.ts"
 import type { ShipSettings } from "./ship-settings.ts"
 import type { GitWorktree } from "./types.ts"
 
 // Trace2 identifies a real hook failure without replacing or bypassing the hook.
-export function prePushFailed(trace: string): boolean {
+function prePushExitCode(trace: string): number | null {
   const hooks = new Set<string>()
   for (const line of trace.split("\n")) {
     try {
       const event = JSON.parse(line)
       const id = `${event.sid}:${event.child_id}`
       if (event.event === "child_start" && event.hook_name === "pre-push") hooks.add(id)
-      if (event.event === "child_exit" && hooks.has(id) && event.code !== 0) return true
+      if (event.event === "child_exit" && hooks.has(id) && typeof event.code === "number") return event.code
     } catch { /* Ignore incomplete trace records. */ }
   }
-  return false
+  return null
+}
+
+export function prePushFailed(trace: string): boolean {
+  const code = prePushExitCode(trace)
+  return code !== null && code !== 0
 }
 
 export async function shipWorktree(options: {
@@ -60,7 +65,10 @@ export async function shipWorktree(options: {
   // Preflight authentication, repository and target before making any commits.
   const repo = JSON.parse(await command(["gh", "repo", "view", remoteUrl, "--json", "url"])) as { url: string }
   if (typeof repo.url !== "string" || !repo.url.startsWith("https://")) throw new Error("GitHub returned an invalid repository URL")
-  await gitCommand(["ls-remote", "--exit-code", remote, `refs/heads/${base}`])
+  const target = await gitCommand(["ls-remote", "--exit-code", remote, `refs/heads/${base}`])
+  const baseRef = target.trim().split(/\s+/)[0]!
+  if (!/^[a-f0-9]{40,64}$/.test(baseRef)) throw new Error("Could not resolve the PR target commit")
+  await gitCommand(["fetch", "--no-tags", "--no-write-fetch-head", remote, `refs/heads/${base}`])
   const listPR = async () => {
     const rows: unknown = JSON.parse(await command(["gh", "pr", "list", "--repo", repo.url, "--head", branch, "--state", "open", "--json", "number,url,baseRefName"]))
     if (!Array.isArray(rows)) throw new Error("GitHub returned invalid pull requests")
@@ -76,15 +84,18 @@ export async function shipWorktree(options: {
   const dir = mkdtempSync(join(tmpdir(), "workforest-ship-"))
   try {
     const agent = options.agent ?? runShipAgent
+    const validation: string[] = []
     const head = async () => (await gitCommand(["rev-parse", "HEAD"])).trim()
     const status = async () => (await gitCommand(["status", "--porcelain"])).trim()
     const ask = async (phase: ShipAgentRequest["phase"], failure?: string, attempt?: number) => {
       await assertBranch()
+      if (phase === "describe" && await status()) throw new Error("New uncommitted changes appeared after push; review them before describing the PR")
       const before = await head()
-      const result = await agent({ cwd, branch, base, settings, phase, failure, attempt, signal, onProgress })
+      const result = parseShipPlan(JSON.stringify(await agent({ cwd, branch, base, baseRef, validation: validation.join("\n\n"), settings, phase, failure, attempt, signal, onProgress })))
       signal?.throwIfAborted()
       await assertBranch()
       if (await head() !== before) throw new Error("HEAD changed during AI work; stopped to preserve commit history")
+      if (phase === "describe" && await status()) throw new Error("Files changed while describing the PR; review them before retrying")
       return result
     }
     const commit = async (plan: ShipPlan) => {
@@ -114,19 +125,24 @@ export async function shipWorktree(options: {
       })
       if (push.timedOut) throw new Error("Push timed out; commits have been kept")
       if (await head() !== pushedHead) throw new Error("Commits changed during push; review them before retrying")
+      const trace = existsSync(tracePath) ? readFileSync(tracePath, "utf8") : ""
+      const hookCode = prePushExitCode(trace)
+      validation.push(`Push attempt ${repairs + 1}: exit ${push.exitCode}. ${hookCode === null ? "No pre-push hook result was observed; do not claim quality checks ran." : `Pre-push hook exited ${hookCode}.`}
+${`${push.stdout}
+${push.stderr}`.trim().slice(-16000)}`)
       if (push.exitCode === 0) {
         if (await status()) throw new Error("Files changed during push; review them before retrying")
         break
       }
       const failure = `${push.stdout}\n${push.stderr}`.trim()
-      const hookFailed = existsSync(tracePath) && prePushFailed(readFileSync(tracePath, "utf8"))
+      const hookFailed = prePushFailed(trace)
       if (!hookFailed) throw new Error(`Push failed; no AI repairs attempted: ${failure.slice(-1500)}`)
       if (repairs >= 3) throw new Error(`Pre-push checks still fail after 3 repair attempts. All commits kept. ${failure.slice(-1500)}`)
       plan = await ask("repair", failure, ++repairs)
       if (await status()) await commit(plan)
       // A repair can fix local dependencies without changing tracked files.
     }
-    if (repairs) plan = await ask("describe")
+    plan = await ask("describe")
     onProgress(plan.prStatus)
     existing = await listPR()
     if (existing.length > 1 || existing[0] && existing[0].base !== base) throw new Error("Open PR target changed during Ship; pushed commits have been kept")
