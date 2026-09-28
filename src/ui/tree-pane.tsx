@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import { displayPath } from "../lib/display-path.ts"
@@ -20,6 +20,7 @@ type Props = {
   focusedGroup: TreeGroup | null
   collapsedGroups: Record<TreeGroup, boolean>
   servers: ServerRow[]
+  pullingPath: string | null
   on: {
     focus: () => void
     new: () => void
@@ -37,11 +38,23 @@ function visibleRows<T>(rows: T[], selected: number, height: number) {
   return rows.slice(offset, offset + count).map((row, index) => ({ row, index: offset + index }))
 }
 
+const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
 export function TreePane(props: Props) {
   const renderer = useRenderer()
   const [listHeight, setListHeight] = createSignal(0)
   const [hoveredIndex, setHoveredIndex] = createSignal<number | null>(null)
+  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   const treeCount = () => props.trees.reduce((count, entry) => count + (entry.kind === "group" ? entry.count : 0), 0)
+
+  createEffect(() => {
+    if (!props.pullingPath) return
+    const timer = setInterval(() => {
+      setSpinnerFrame((value) => (value + 1) % spinnerFrames.length)
+      renderer.requestRender()
+    }, 100)
+    onCleanup(() => clearInterval(timer))
+  })
 
   function wheel(event: MouseEvent) {
     props.on.focus()
@@ -92,7 +105,8 @@ export function TreePane(props: Props) {
             const name = () => {
               const [indicator, ...statusParts] = serverStatus(serversForWorktree(props.servers, tree.path)).split(" ")
               const status = statusParts.join(" ")
-              return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
+              const pulling = props.pullingPath === tree.path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
+              return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${pulling}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
             }
             return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
               backgroundColor={selected()

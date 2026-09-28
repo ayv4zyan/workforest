@@ -1,10 +1,10 @@
-import { onCleanup, type Accessor, type Setter } from "solid-js"
+import { createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
 import type { CliRenderer } from "@opentui/core"
 import { suggestWorktreeName } from "../lib/auto-rename.ts"
 import { loadAutoRename } from "../lib/auto-rename-settings.ts"
 import { setupWorktreeDepsAsync } from "../lib/deps.ts"
 import { displayPath } from "../lib/display-path.ts"
-import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, removeWorktreeAsync, renameWorktree, worktreeDisplayName } from "../lib/git.ts"
+import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, pullWorktree, removeWorktreeAsync, renameWorktree, worktreeDisplayName } from "../lib/git.ts"
 import { movePort } from "../lib/ports.ts"
 import { forgetWorktreeRuntime, moveRunRecord, serversForWorktree, stopServer } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
@@ -40,6 +40,7 @@ export function createWorktreeWorkflow(options: {
 }) {
   const { workspace, dialog, operation } = options
   let renameRequest: AbortController | undefined
+  const [pullingPath, setPullingPath] = createSignal<string | null>(null)
   onCleanup(() => renameRequest?.abort())
   const renaming = () => Boolean(renameRequest)
   const abortRename = () => renameRequest?.abort()
@@ -161,6 +162,24 @@ export function createWorktreeWorkflow(options: {
     dialog.show({ kind: "delete" })
   }
 
+  function pullTree() {
+    if (operation.busy()) return
+    const tree = workspace.selectedTree()
+    if (!tree) return
+    if (!tree.branch) {
+      operation.setStatus("detached worktree has no branch to pull")
+      return
+    }
+    const name = worktreeDisplayName(tree)
+    const path = tree.path
+    setPullingPath(path)
+    void operation.run("pulling", async () => {
+      const output = await pullWorktree(tree)
+      if (output.toLowerCase().includes("already up to date")) return `${name} is up to date`
+      return `pulled ${name}`
+    }).finally(() => setPullingPath((current) => current === path ? null : current))
+  }
+
   function submit(current: Modal, value: string): boolean {
     if (current.kind === "new-tree") {
       const project = workspace.selectedProject()
@@ -208,7 +227,7 @@ export function createWorktreeWorkflow(options: {
 
   return {
     renaming, abortRename, copyWorktreePath, retryWorktreeSetup,
-    openNewTree, toggleSourceMenu, pickSource, openRename, openManualRename, autoRename, openDelete,
-    submit, deleteTree,
+    pullingPath, openNewTree, toggleSourceMenu, pickSource, openRename, openManualRename, autoRename, openDelete,
+    pullTree, submit, deleteTree,
   }
 }

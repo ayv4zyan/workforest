@@ -200,3 +200,49 @@ export async function removeWorktreeAsync(opts: { repoPath: string; tree: GitWor
   args.push(tree.path)
   await execOkAsync(["git", ...args], { cwd: repoPath })
 }
+
+const REPO_LOCAL_GIT_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"])
+const PULL_TIMEOUT_MS = 10 * 60 * 1000
+
+function gitPullEnv(cwd: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || REPO_LOCAL_GIT_VARS.has(key)) continue
+    env[key] = value
+  }
+  // Fail credential prompts instead of hanging the TUI, and accept the default merge message.
+  env.GIT_TERMINAL_PROMPT = "0"
+  env.GIT_MERGE_AUTOEDIT = "no"
+  // BatchMode refuses SSH passphrase and host-key prompts. Append it so a configured command is kept.
+  env.GIT_SSH_COMMAND = noninteractiveSshCommand(cwd, env)
+  return env
+}
+
+function noninteractiveSshCommand(cwd: string, env: Record<string, string>): string {
+  const configured = env.GIT_SSH_COMMAND?.trim()
+    || env.GIT_SSH?.trim()
+    || configuredSshCommand(cwd, env)
+    || "ssh"
+  return withSshBatchMode(configured)
+}
+
+function withSshBatchMode(command: string): string {
+  if (/(?:^|\s)-o\s*BatchMode(?:\s|=)/.test(command)) return command
+  return `${command} -o BatchMode=yes`
+}
+
+function configuredSshCommand(cwd: string, env: Record<string, string>): string | undefined {
+  const result = exec(["git", "config", "--get", "core.sshCommand"], { cwd, env })
+  if (result.exitCode !== 0) return undefined
+  const value = result.stdout.trim()
+  return value.length > 0 ? value : undefined
+}
+
+export async function pullWorktree(tree: GitWorktree, opts: { timeoutMs?: number } = {}): Promise<string> {
+  if (!tree.branch) throw new Error("Detached worktree has no branch to pull")
+  return execOkAsync(["git", "pull"], {
+    cwd: tree.path,
+    env: gitPullEnv(tree.path),
+    timeoutMs: opts.timeoutMs ?? PULL_TIMEOUT_MS,
+  })
+}

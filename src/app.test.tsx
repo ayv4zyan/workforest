@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { realpathSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { realpathSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
 import type { Renderable } from "@opentui/core"
-import { addProject, loadConfig } from "./lib/config.ts"
+import { addProject, loadConfig, setProjectStartCommand } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
-import { collectServers, stopServer, loadRunRecords } from "./lib/servers.ts"
+import { collectServers, startServer, stopServer, loadRunRecords } from "./lib/servers.ts"
 import { rememberPort } from "./lib/ports.ts"
 import { App } from "./app.tsx"
 import { ActionButton } from "./ui/button.tsx"
@@ -829,6 +829,8 @@ test.serial("row menus target the clicked item, protect main, and support mouse 
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressArrow("down")
     setup.mockInput.pressEnter()
     await paint(setup)
     expect(setup.captureCharFrame()).toContain("Delete feature-menu?")
@@ -848,6 +850,204 @@ test.serial("row menus target the clicked item, protect main, and support mouse 
     expect(loadConfig(home).projects.map((row) => row.name)).toEqual(["alpha"])
     expect(listWorktrees(repos[1]!)).toHaveLength(1)
   } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.serial("worktree menu pull fast-forwards that checkout and reports a missing upstream", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-pull-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const origin = join(root, "origin")
+  const repo = join(root, "repo")
+  mkdirSync(origin)
+  process.env.WORKFOREST_HOME = home
+  gitOk(origin, ["init", "-b", "main"])
+  gitOk(origin, ["config", "user.email", "wf@test"])
+  gitOk(origin, ["config", "user.name", "wf"])
+  gitOk(origin, ["config", "commit.gpgsign", "false"])
+  writeFileSync(join(origin, "README.md"), "hi\n")
+  gitOk(origin, ["add", "."])
+  gitOk(origin, ["commit", "-m", "init"])
+  gitOk(root, ["clone", origin, repo])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-pull" })
+  writeFileSync(join(origin, "remote.txt"), "from origin\n")
+  gitOk(origin, ["add", "."])
+  gitOk(origin, ["commit", "-m", "remote"])
+  const setup = await testRender(() => <App />, { width: 110, height: 24 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const rightClick = async (label: string) => {
+    const at = findText(setup.captureCharFrame(), label)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  try {
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("(main)"); i++) await paint(setup)
+    await rightClick("(main)")
+    expect(setup.captureCharFrame()).toContain("Pull")
+    const pull = findById(setup.renderer.root, "btn-pull")!
+    expect(pull.y).toBeGreaterThan(findById(setup.renderer.root, "btn-rename")!.y)
+    expect(pull.y).toBeLessThan(findById(setup.renderer.root, "btn-copy-path")!.y)
+    await click("btn-pull")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("pulled main"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("pulled main")
+    expect(existsSync(join(repo, "remote.txt"))).toBe(true)
+    expect(existsSync(join(tree.path, "remote.txt"))).toBe(false)
+
+    await rightClick("(main)")
+    await click("btn-pull")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("main is up to date"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("main is up to date")
+
+    await rightClick("feature-pull")
+    await click("btn-pull")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().toLowerCase().includes("no tracking information"); i++) await paint(setup)
+    expect(setup.captureCharFrame().toLowerCase()).toContain("no tracking information")
+    expect(existsSync(join(tree.path, "remote.txt"))).toBe(false)
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.serial("pull shows a spinner beside the worktree that is pulling", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-pull-spin-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const repo = join(root, "repo")
+  const home = join(root, "home")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["config", "commit.gpgsign", "false"])
+  gitOk(repo, ["commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-pull" })
+  const realGit = Bun.which("git")!
+  const bin = join(root, "bin")
+  const shim = join(bin, "git")
+  mkdirSync(bin)
+  writeFileSync(shim, `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[0] === "pull") await Bun.sleep(800)
+const child = Bun.spawnSync([${JSON.stringify(realGit)}, ...args], { cwd: process.cwd(), stdout: "inherit", stderr: "inherit" })
+process.exit(child.exitCode ?? 1)
+`)
+  chmodSync(shim, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 110, height: 24 })
+  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const nameLine = () => setup.captureCharFrame().split("\n").find((line) => line.includes("○ feature-pull")) ?? ""
+  const spinnerOn = (line: string) => spinnerFrames.find((frame) => line.includes(frame))
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  try {
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("feature-pull"); i++) await paint(setup)
+    const row = findText(setup.captureCharFrame(), "feature-pull")
+    await setup.mockMouse.click(row.x, row.y, 2)
+    await paint(setup)
+    await click("btn-pull")
+    expect(nameLine()).toMatch(/feature-pull [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] pulling/)
+    const mainLine = setup.captureCharFrame().split("\n").find((line) => line.includes("(main)")) ?? ""
+    expect(spinnerOn(mainLine)).toBeUndefined()
+    expect(mainLine).not.toContain("pulling")
+    const first = spinnerOn(nameLine())
+    let next = first
+    for (let i = 0; i < 8 && next === first; i++) {
+      await Bun.sleep(80)
+      await paint(setup)
+      next = spinnerOn(nameLine())
+    }
+    expect(next).toBeTruthy()
+    expect(next).not.toBe(first)
+    for (let i = 0; i < 50 && spinnerOn(nameLine()); i++) {
+      await Bun.sleep(50)
+      await paint(setup)
+    }
+    expect(spinnerOn(nameLine())).toBeUndefined()
+    expect(nameLine()).not.toContain("pulling")
+    expect(setup.captureCharFrame().toLowerCase()).toContain("no tracking information")
+  } finally {
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.serial("worktree menu runs an idle worktree and stops one that is already running", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-menu-run-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = setProjectStartCommand(home, addProject(home, repo).id, "bun server.ts")
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-run" })
+  writeFileSync(join(tree.path, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") })')
+  const probe = Bun.serve({ port: 0, fetch: () => new Response("probe") })
+  const port = probe.port!
+  probe.stop(true)
+  const record = startServer({ home, project, worktree: tree, usedPorts: [], port })
+  const setup = await testRender(() => <App />, { width: 110, height: 24 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const rightClick = async (label: string) => {
+    const at = findText(setup.captureCharFrame(), label)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  try {
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes(`:${port}`); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain(`:${port}`)
+    await rightClick("feature-run")
+    expect(findById(setup.renderer.root, "btn-menu-stop")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-menu-run")).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain("Stop")
+    setup.mockInput.pressEscape()
+    await paint(setup)
+
+    await rightClick("(main)")
+    expect(findById(setup.renderer.root, "btn-menu-run")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-menu-stop")).toBeUndefined()
+    const run = findById(setup.renderer.root, "btn-menu-run")!
+    expect(run.y).toBeGreaterThan(findById(setup.renderer.root, "btn-rename")!.y)
+    expect(run.y).toBeLessThan(findById(setup.renderer.root, "btn-pull")!.y)
+    await click("btn-menu-run")
+    expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
+    expect(setup.captureCharFrame()).toContain("start server")
+    await click("btn-cancel")
+
+    await rightClick("feature-run")
+    await click("btn-menu-stop")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("stopped 1 server"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("stopped 1 server(s)")
+    expect(setup.captureCharFrame()).not.toContain(`:${port}`)
+  } finally {
+    try { process.kill(record.pid) } catch { /* already stopped */ }
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
     rmSync(root, { recursive: true, force: true })

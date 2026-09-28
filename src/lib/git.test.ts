@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execOk } from "./exec.ts"
@@ -10,6 +10,7 @@ import {
   listWorktrees,
   mainWorktreeBranch,
   parseWorktreeList,
+  pullWorktree,
   removeWorktree,
   renameWorktree,
   samePath,
@@ -141,4 +142,138 @@ test("rename defaults to branch only even when a sibling folder has the new name
   expect(renamed.branch).toBe("agent/occupied")
   expect(listWorktrees(repo).find((row) => row.path === tree.path)?.branch).toBe("agent/occupied")
   expect(existsSync(join(tree.path, "local.txt"))).toBe(true)
+})
+
+test("pullWorktree fast-forwards that worktree and leaves the main checkout behind", async () => {
+  const origin = initRepo()
+  const clone = mkdtempSync(join(tmpdir(), "wf-clone-"))
+  rmSync(clone, { recursive: true })
+  execOk(["git", "clone", origin, clone])
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: clone, home, projectId: "demo", name: "feature-pull" })
+  execOk(["git", "branch", "--set-upstream-to=origin/main"], { cwd: tree.path })
+  writeFileSync(join(origin, "remote.txt"), "from origin\n")
+  execOk(["git", "add", "."], { cwd: origin })
+  execOk(["git", "commit", "-m", "remote"], { cwd: origin })
+
+  const output = await pullWorktree(tree)
+  expect(output.toLowerCase()).toContain("fast-forward")
+  expect(existsSync(join(tree.path, "remote.txt"))).toBe(true)
+  expect(existsSync(join(clone, "remote.txt"))).toBe(false)
+
+  const main = listWorktrees(clone).find((row) => row.isMain)!
+  const mainOutput = await pullWorktree(main)
+  expect(mainOutput.toLowerCase()).toContain("fast-forward")
+  expect(existsSync(join(clone, "remote.txt"))).toBe(true)
+})
+
+test("pullWorktree rejects a detached worktree and a branch with no upstream", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-pull" })
+  await expect(pullWorktree({ ...tree, branch: null })).rejects.toThrow("no branch to pull")
+  await expect(pullWorktree(tree)).rejects.toThrow(/no tracking information/i)
+})
+
+function withEnv(updates: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  const previous = new Map<string, string | undefined>()
+  for (const key of Object.keys(updates)) previous.set(key, process.env[key])
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  return fn().finally(() => {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+}
+
+function trackSshBranch(repoPath: string, branch: string): void {
+  execOk(["git", "remote", "add", "origin", "ssh://git@example.invalid/repo.git"], { cwd: repoPath })
+  execOk(["git", "config", `branch.${branch}.remote`, "origin"], { cwd: repoPath })
+  execOk(["git", "config", `branch.${branch}.merge`, "refs/heads/main"], { cwd: repoPath })
+}
+
+test("pullWorktree ignores inherited repository location variables", async () => {
+  const origin = initRepo()
+  const clone = mkdtempSync(join(tmpdir(), "wf-clone-"))
+  rmSync(clone, { recursive: true })
+  execOk(["git", "clone", origin, clone])
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: clone, home, projectId: "demo", name: "feature-pull" })
+  execOk(["git", "branch", "--set-upstream-to=origin/main"], { cwd: tree.path })
+  writeFileSync(join(origin, "remote.txt"), "from origin\n")
+  execOk(["git", "add", "."], { cwd: origin })
+  execOk(["git", "commit", "-m", "remote"], { cwd: origin })
+
+  await withEnv({
+    GIT_DIR: join(origin, ".git"),
+    GIT_WORK_TREE: origin,
+    GIT_INDEX_FILE: join(clone, "missing-index"),
+  }, async () => {
+    const output = await pullWorktree(tree)
+    expect(output.toLowerCase()).toContain("fast-forward")
+  })
+  expect(existsSync(join(tree.path, "remote.txt"))).toBe(true)
+  expect(existsSync(join(clone, "remote.txt"))).toBe(false)
+})
+
+test("pullWorktree appends BatchMode and keeps a configured SSH command", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-pull" })
+  const dir = mkdtempSync(join(tmpdir(), "wf-ssh-"))
+  const log = join(dir, "ssh.log")
+  const script = join(dir, "ssh-wrap")
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexit 1\n`)
+  chmodSync(script, 0o755)
+  execOk(["git", "config", "core.sshCommand", "ssh -o IdentityFile=/tmp/should-not-run"], { cwd: tree.path })
+  trackSshBranch(tree.path, "feature-pull")
+
+  await withEnv({ GIT_SSH_COMMAND: `${script} -o IdentitiesOnly=yes`, GIT_SSH: undefined }, async () => {
+    await expect(pullWorktree(tree)).rejects.toThrow()
+  })
+  const logged = readFileSync(log, "utf8")
+  expect(logged).toContain("IdentitiesOnly=yes")
+  expect(logged).toContain("BatchMode=yes")
+  expect(logged).not.toContain("should-not-run")
+})
+
+test("pullWorktree appends BatchMode to core.sshCommand when no SSH env is set", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-pull" })
+  const dir = mkdtempSync(join(tmpdir(), "wf-ssh-"))
+  const log = join(dir, "ssh.log")
+  const script = join(dir, "ssh-wrap")
+  writeFileSync(script, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${log}'\nexit 1\n`)
+  chmodSync(script, 0o755)
+  execOk(["git", "config", "core.sshCommand", `${script} -o IdentitiesOnly=yes`], { cwd: tree.path })
+  trackSshBranch(tree.path, "feature-pull")
+
+  await withEnv({ GIT_SSH_COMMAND: undefined, GIT_SSH: undefined }, async () => {
+    await expect(pullWorktree(tree)).rejects.toThrow()
+  })
+  const logged = readFileSync(log, "utf8")
+  expect(logged).toContain("IdentitiesOnly=yes")
+  expect(logged).toContain("BatchMode=yes")
+})
+
+test("pullWorktree stops a hung pull on timeout", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-pull" })
+  const dir = mkdtempSync(join(tmpdir(), "wf-ssh-"))
+  const script = join(dir, "ssh-hang")
+  writeFileSync(script, "#!/bin/sh\nsleep 30\n")
+  chmodSync(script, 0o755)
+  trackSshBranch(tree.path, "feature-pull")
+
+  const started = Date.now()
+  await withEnv({ GIT_SSH_COMMAND: script }, async () => {
+    await expect(pullWorktree(tree, { timeoutMs: 500 })).rejects.toThrow("git pull timed out after 500ms")
+  })
+  expect(Date.now() - started).toBeLessThan(5000)
 })
