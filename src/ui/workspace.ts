@@ -1,11 +1,12 @@
 import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js"
+import { loadPullRequest, type PullRequest } from "../lib/branch-metadata.ts"
 import { loadConfig, setSelectedProjectId as saveSelectedProjectId } from "../lib/config.ts"
 import { isDirtyAsync, listWorktreesAsync, worktreeDisplayName } from "../lib/git.ts"
 import { collectServersAsync, serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
 
 export type Pane = "projects" | "trees"
-export type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
+export type TreeRow = GitWorktree & { dirty: boolean; displayName: string; pr?: PullRequest | null }
 export type TreeGroup = "running" | "stopped"
 export type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 
@@ -135,6 +136,7 @@ export function createWorkspace(options: {
       const listed = await Promise.all(selectedTrees.map(async (tree) => ({
         ...tree,
         dirty: await isDirtyAsync(tree.path),
+        pr: await loadPullRequest(tree.path, tree.branch),
         displayName: worktreeDisplayName(tree),
       })))
       if (generation !== refreshGeneration || selectedProjectId() !== currentId) return

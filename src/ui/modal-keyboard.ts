@@ -31,6 +31,7 @@ type Context = {
     pickSettings: (field: SettingsField, value: string) => void
     toggleSettings: (field: SettingsField) => void
     saveSettings: () => void
+    selectSection: (section: "autoRename" | "ship") => void
   }
   path: {
     pathSuggestions: Accessor<PathSuggestion[]>
@@ -79,6 +80,10 @@ export function handleModalKey(key: KeyEvent, context: Context) {
           return
         }
         key.preventDefault()
+        if (modalFocus() === "section" && ["left", "right", "return", "enter", "space"].includes(key.name)) {
+          context.settings.selectSection(current.section === "ship" ? "autoRename" : "ship")
+          return
+        }
         if (key.name === "escape") cancelModal()
         else if (key.name === "tab" || key.name === "up" || key.name === "down") {
           const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
@@ -126,7 +131,7 @@ export function handleModalKey(key: KeyEvent, context: Context) {
         return
       }
       const openTreeModal = modal()
-      if (openTreeModal?.kind === "new-tree" && openTreeModal.branchOpen) {
+      if ((openTreeModal?.kind === "new-tree" || openTreeModal?.kind === "ship") && openTreeModal.branchOpen) {
         const branches = openTreeModal.branches
         key.preventDefault()
         if (key.name === "escape") {

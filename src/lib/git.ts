@@ -146,6 +146,7 @@ export function createWorktree(opts: {
     gitOk(repoPath, ["worktree", "add", dest, name])
   } else {
     gitOk(repoPath, ["worktree", "add", "-b", name, dest, start])
+    gitOk(repoPath, ["config", "--local", `branch.${name}.workforest-source`, start])
   }
   const listed = listWorktrees(repoPath).find(
     (tree) => samePath(tree.path, dest) || (!tree.isMain && tree.branch === name),
@@ -204,7 +205,7 @@ export async function removeWorktreeAsync(opts: { repoPath: string; tree: GitWor
 const REPO_LOCAL_GIT_VARS = new Set(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"])
 const PULL_TIMEOUT_MS = 10 * 60 * 1000
 
-function gitPullEnv(cwd: string): Record<string, string> {
+export function gitNetworkEnv(cwd: string): Record<string, string> {
   const env: Record<string, string> = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined || REPO_LOCAL_GIT_VARS.has(key)) continue
@@ -242,7 +243,7 @@ export async function pullWorktree(tree: GitWorktree, opts: { timeoutMs?: number
   if (!tree.branch) throw new Error("Detached worktree has no branch to pull")
   return execOkAsync(["git", "pull"], {
     cwd: tree.path,
-    env: gitPullEnv(tree.path),
+    env: gitNetworkEnv(tree.path),
     timeoutMs: opts.timeoutMs ?? PULL_TIMEOUT_MS,
   })
 }

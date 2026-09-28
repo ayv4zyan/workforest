@@ -7,12 +7,13 @@ import type { Pane } from "./workspace.ts"
 export type MenuAction = {
   id: string
   label: string
+  submenu?: "rename" | "git"
   trailingLabel?: string
   variant?: "accent" | "danger"
   disabled?: boolean
   onPress: () => void
 }
-export type RowMenu = { pane: Pane; x: number; y: number; renameOpen: boolean }
+export type RowMenu = { pane: Pane; x: number; y: number; submenu: "rename" | "git" | null }
 
 export function createContextMenu(options: {
   dimensions: Accessor<{ width: number; height: number }>
@@ -29,10 +30,12 @@ export function createContextMenu(options: {
     setMenu(next)
   }
 
-  function openRenameSubmenu() {
+  function openSubmenu(kind: "rename" | "git") {
     const current = menu()
-    if (!current || current.pane !== "trees" || options.actions()[0]?.disabled) return
-    setMenu({ ...current, renameOpen: true })
+    const action = options.actions().find((action) => action.submenu === kind)
+    if (!current || current.pane !== "trees" || !action || action.disabled) return
+    if (current.submenu === kind) return
+    setMenu({ ...current, submenu: kind })
     setSubmenuIndex(0)
   }
 
@@ -46,8 +49,8 @@ export function createContextMenu(options: {
   function pressMenu(index = menuIndex()) {
     const action = options.actions()[index]
     if (!action || action.disabled) return
-    if (menu()?.pane === "trees" && index === 0) {
-      openRenameSubmenu()
+    if (action.submenu) {
+      openSubmenu(action.submenu)
       return
     }
     setMenu(null)
@@ -56,9 +59,9 @@ export function createContextMenu(options: {
 
   function handleKey(key: KeyEvent) {
     key.preventDefault()
-    if (menu()?.renameOpen) {
+    if (menu()?.submenu) {
       if (key.name === "escape" || key.name === "left") {
-        setMenu((current) => current ? { ...current, renameOpen: false } : null)
+        setMenu((current) => current ? { ...current, submenu: null } : null)
       } else if (["up", "down", "tab"].includes(key.name)) {
         const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
         setSubmenuIndex((submenuIndex() + delta + options.submenuActions().length) % options.submenuActions().length)
@@ -69,7 +72,10 @@ export function createContextMenu(options: {
     else if (["up", "down", "tab"].includes(key.name)) {
       const delta = key.name === "up" || (key.name === "tab" && key.shift) ? -1 : 1
       setMenuIndex((menuIndex() + delta + options.actions().length) % options.actions().length)
-    } else if (key.name === "right" && menu()?.pane === "trees" && menuIndex() === 0) openRenameSubmenu()
+    } else if (key.name === "right") {
+      const kind = options.actions()[menuIndex()]?.submenu
+      if (kind) openSubmenu(kind)
+    }
     else if (["return", "enter"].includes(key.name)) pressMenu()
   }
 
@@ -79,7 +85,7 @@ export function createContextMenu(options: {
   }
   const contextMenuWidth = () => actionMenuWidth(options.actions())
   const contextMenuHeight = () => options.actions().length + 2
-  const renameSubmenuWidth = () => actionMenuWidth(options.submenuActions(), 20)
+  const submenuWidth = () => actionMenuWidth(options.submenuActions(), 20)
 
   function Layer() {
     return <Show when={menu()}>
@@ -101,21 +107,23 @@ export function createContextMenu(options: {
                 setMenuIndex(index())
                 const now = menu()
                 if (!now) return
-                if (now.pane === "trees" && index() === 0) openRenameSubmenu()
-                else if (now.renameOpen) setMenu({ ...now, renameOpen: false })
+                if (action.submenu) openSubmenu(action.submenu)
+                else if (now.submenu) setMenu({ ...now, submenu: null })
               }} />
           }</For>
         </box>
-        <Show when={current().renameOpen}>
-          <box id="rename-submenu" position="absolute"
+        <Show when={current().submenu}>
+          <box id={`${current().submenu}-submenu`} position="absolute"
             left={(() => {
               const mainLeft = Math.max(0, Math.min(current().x, options.dimensions().width - contextMenuWidth()))
-              return mainLeft + contextMenuWidth() + renameSubmenuWidth() - 1 <= options.dimensions().width
+              return mainLeft + contextMenuWidth() + submenuWidth() - 1 <= options.dimensions().width
                 ? mainLeft + contextMenuWidth() - 1
-                : Math.max(0, mainLeft - renameSubmenuWidth() + 1)
+                : Math.max(0, mainLeft - submenuWidth() + 1)
             })()}
-            top={Math.max(0, Math.min(current().y, options.dimensions().height - contextMenuHeight()))}
-            width={renameSubmenuWidth()} height={4} zIndex={31}
+            top={Math.max(0, Math.min(
+              Math.max(0, Math.min(current().y, options.dimensions().height - contextMenuHeight())) + options.actions().findIndex((action) => action.submenu === current().submenu),
+              options.dimensions().height - options.submenuActions().length - 2))}
+            width={submenuWidth()} height={options.submenuActions().length + 2} zIndex={31}
             border borderColor={theme.accent} backgroundColor={theme.panel}
             onMouseDown={(event) => event.stopPropagation()}>
             <For each={options.submenuActions()}>{(action, index) =>
@@ -129,5 +137,5 @@ export function createContextMenu(options: {
     </Show>
   }
 
-  return { menu, setMenu, open, openRenameSubmenu, handleKey, Layer }
+  return { menu, setMenu, open, openSubmenu, handleKey, Layer }
 }

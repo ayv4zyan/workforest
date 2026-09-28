@@ -892,10 +892,11 @@ test.serial("worktree menu pull fast-forwards that checkout and reports a missin
   try {
     for (let i = 0; i < 30 && !setup.captureCharFrame().includes("(main)"); i++) await paint(setup)
     await rightClick("(main)")
-    expect(setup.captureCharFrame()).toContain("Pull")
-    const pull = findById(setup.renderer.root, "btn-pull")!
-    expect(pull.y).toBeGreaterThan(findById(setup.renderer.root, "btn-rename")!.y)
-    expect(pull.y).toBeLessThan(findById(setup.renderer.root, "btn-copy-path")!.y)
+    expect(setup.captureCharFrame()).toContain("Git")
+    const git = findById(setup.renderer.root, "btn-git")!
+    expect(git.y).toBeGreaterThan(findById(setup.renderer.root, "btn-rename")!.y)
+    expect(git.y).toBeLessThan(findById(setup.renderer.root, "btn-copy-path")!.y)
+    await click("btn-git")
     await click("btn-pull")
     for (let i = 0; i < 40 && !setup.captureCharFrame().includes("pulled main"); i++) await paint(setup)
     expect(setup.captureCharFrame()).toContain("pulled main")
@@ -903,11 +904,13 @@ test.serial("worktree menu pull fast-forwards that checkout and reports a missin
     expect(existsSync(join(tree.path, "remote.txt"))).toBe(false)
 
     await rightClick("(main)")
+    await click("btn-git")
     await click("btn-pull")
     for (let i = 0; i < 40 && !setup.captureCharFrame().includes("main is up to date"); i++) await paint(setup)
     expect(setup.captureCharFrame()).toContain("main is up to date")
 
     await rightClick("feature-pull")
+    await click("btn-git")
     await click("btn-pull")
     for (let i = 0; i < 40 && !setup.captureCharFrame().toLowerCase().includes("no tracking information"); i++) await paint(setup)
     expect(setup.captureCharFrame().toLowerCase()).toContain("no tracking information")
@@ -961,6 +964,7 @@ process.exit(child.exitCode ?? 1)
     const row = findText(setup.captureCharFrame(), "feature-pull")
     await setup.mockMouse.click(row.x, row.y, 2)
     await paint(setup)
+    await click("btn-git")
     await click("btn-pull")
     expect(nameLine()).toMatch(/feature-pull [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] pulling/)
     const mainLine = setup.captureCharFrame().split("\n").find((line) => line.includes("(main)")) ?? ""
@@ -1035,7 +1039,7 @@ test.serial("worktree menu runs an idle worktree and stops one that is already r
     expect(findById(setup.renderer.root, "btn-menu-stop")).toBeUndefined()
     const run = findById(setup.renderer.root, "btn-menu-run")!
     expect(run.y).toBeGreaterThan(findById(setup.renderer.root, "btn-rename")!.y)
-    expect(run.y).toBeLessThan(findById(setup.renderer.root, "btn-pull")!.y)
+    expect(run.y).toBeLessThan(findById(setup.renderer.root, "btn-git")!.y)
     await click("btn-menu-run")
     expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
     expect(setup.captureCharFrame()).toContain("start server")
@@ -1418,3 +1422,146 @@ test.serial("add project keeps the dialog, input and buttons still while typing 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test.serial("Ship settings keep independent drafts when switching sidebar sections", async () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-ship-settings-ui-"))
+  const oldHome = process.env.WORKFOREST_HOME
+  process.env.WORKFOREST_HOME = home
+  const setup = await testRender(() => <App />, { width: 110, height: 36 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const prompt = () => findById(setup.renderer.root, "settings-prompt") as import("@opentui/core").TextareaRenderable
+  try {
+    await paint(setup)
+    await click("btn-settings")
+    prompt().setText("Rename draft")
+    await paint(setup)
+    await click("settings-section-ship")
+    expect(prompt().plainText).toContain("Prepare this branch for review")
+    prompt().setText("Ship draft")
+    await paint(setup)
+    await click("settings-section-autoRename")
+    expect(prompt().plainText).toBe("Rename draft")
+    await click("settings-section-ship")
+    expect(prompt().plainText).toBe("Ship draft")
+    await click("btn-settings-save")
+    expect(loadConfig(home).autoRename?.prompt).toBe("Rename draft")
+    expect(loadConfig(home).ship?.prompt).toBe("Ship draft")
+    await click("btn-settings")
+    await click("settings-section-ship")
+    expect(prompt().plainText).toBe("Ship draft")
+    prompt().setText("Discard this")
+    await click("btn-settings-cancel")
+    expect(loadConfig(home).ship?.prompt).toBe("Ship draft")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test.serial("Git hover opens Ship; target defaults to source, AI progress stays on its row, and PR opens inline", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-ship-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME, oldPath = process.env.PATH
+  const home = join(root, "home"), repo = join(root, "repo"), remote = join(root, "remote.git"), bin = join(root, "bin")
+  mkdirSync(repo)
+  mkdirSync(bin)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "commit.gpgsign", "false"])
+  gitOk(repo, ["commit", "--allow-empty", "-m", "initial"])
+  gitOk(repo, ["branch", "develop"])
+  for (let i = 0; i < 12; i++) gitOk(repo, ["branch", `branch-${i}`])
+  gitOk(root, ["init", "--bare", remote])
+  gitOk(repo, ["remote", "add", "origin", remote])
+  gitOk(repo, ["push", "origin", "main", "develop"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "ship-feature", startPoint: "develop" })
+  writeFileSync(join(tree.path, "feature.txt"), "user feature")
+  const prs = join(root, "prs.json"), opened = join(root, "opened.txt")
+  writeFileSync(prs, "[]")
+  const shim = (name: string, body: string) => {
+    const file = join(bin, name)
+    writeFileSync(file, `#!${process.execPath}\n${body}`)
+    chmodSync(file, 0o755)
+  }
+  shim("gh", `
+const args = process.argv.slice(2)
+if (args[0] === 'repo') console.log(JSON.stringify({url:'https://github.com/test/demo'}))
+else if (args[1] === 'list') console.log(await Bun.file(${JSON.stringify(prs)}).text())
+else if (args[1] === 'create') await Bun.write(${JSON.stringify(prs)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:args[args.indexOf('--base')+1]}]))
+`)
+  shim("codex", `
+const args = process.argv.slice(2)
+await Bun.stdin.text()
+console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'SHIP_STATUS: reviewing checkout validation'}}))
+await Bun.sleep(600)
+await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({commitMessage:'Add feature',title:'Add feature',body:'Feature work',commitStatus:'recording feature',pushStatus:'sending checked branch',prStatus:'opening feature review'}))
+`)
+  shim(process.platform === "darwin" ? "open" : "xdg-open", `await Bun.write(${JSON.stringify(opened)}, process.argv[2])`)
+  process.env.PATH = `${bin}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 120, height: 30 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  try {
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("ship-feature"); i++) await paint(setup)
+    const at = findText(setup.captureCharFrame(), "ship-feature")
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "btn-pull")).toBeUndefined()
+    const git = findById(setup.renderer.root, "btn-git")!
+    await setup.mockMouse.moveTo(git.x + 1, git.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "git-submenu")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-pull")).toBeTruthy()
+    await click("btn-ship")
+    expect(setup.captureCharFrame()).toContain("PR target branch")
+    expect(setup.captureCharFrame()).toContain("develop")
+    expect(setup.captureCharFrame()).toContain("Source: saved")
+    await click("source-branch")
+    expect(findById(setup.renderer.root, "source-branch-menu")).toBeTruthy()
+    // The selected branch remains visible even beyond the first eight options.
+    expect(setup.captureCharFrame()).toContain("● develop")
+    setup.mockInput.pressArrow("down")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("○ main")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(findById(setup.renderer.root, "source-branch-menu")).toBeUndefined()
+    expect(gitOk(repo, ["config", "--get", "branch.ship-feature.workforest-source"]).trim()).toBe("develop")
+    await click("source-branch")
+    setup.mockInput.pressArrow("up")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    await click("btn-submit")
+    expect(findById(setup.renderer.root, "modal-dialog")).toBeUndefined()
+    for (let i = 0; i < 100 && !setup.captureCharFrame().includes("reviewing checkout validation"); i++) await paint(setup)
+    const lines = setup.captureCharFrame().split("\n")
+    expect(lines.find((line) => line.includes("ship-feature"))).toContain("reviewing checkout validation")
+    expect(lines.find((line) => line.includes("(main)"))).not.toContain("reviewing checkout validation")
+    expect(findById(setup.renderer.root, "btn-cancel-ship")).toBeTruthy()
+    for (let i = 0; i < 120 && !findById(setup.renderer.root, "pr-link-450"); i++) await paint(setup)
+    expect(findById(setup.renderer.root, "pr-link-450")).toBeTruthy()
+    expect(findById(setup.renderer.root, "modal-dialog")).toBeUndefined()
+    expect(setup.captureCharFrame().split("\n").find((line) => line.includes("ship-feature"))).toContain("#450")
+    expect(gitOk(repo, ["config", "--get", "branch.ship-feature.workforest-source"]).trim()).toBe("develop")
+    await click("pr-link-450")
+    for (let i = 0; i < 20 && !existsSync(opened); i++) await paint(setup)
+    expect(await Bun.file(opened).text()).toBe("https://github.com/test/demo/pull/450")
+  } finally {
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 20000)

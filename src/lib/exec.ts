@@ -37,9 +37,10 @@ export function execOk(
 
 export async function execAsync(
   cmd: string[],
-  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ExecResult> {
-  const timed = opts.timeoutMs !== undefined
+  opts.signal?.throwIfAborted()
+  const timed = opts.timeoutMs !== undefined || opts.signal !== undefined
   const child = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: opts.env ?? process.env,
@@ -58,7 +59,8 @@ export async function execAsync(
   }
   // detached starts a new session, so exit must still reap a pull if the TUI quits.
   if (timed) process.on("exit", killGroup)
-  const timer = timed
+  opts.signal?.addEventListener("abort", killGroup, { once: true })
+  const timer = opts.timeoutMs !== undefined
     ? setTimeout(() => {
         if (child.exitCode !== null) return
         timedOut = true
@@ -71,16 +73,18 @@ export async function execAsync(
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ])
+    opts.signal?.throwIfAborted()
     return { stdout, stderr, exitCode: exitCode ?? 1, timedOut }
   } finally {
     if (timer) clearTimeout(timer)
     if (timed) process.off("exit", killGroup)
+    opts.signal?.removeEventListener("abort", killGroup)
   }
 }
 
 export async function execOkAsync(
   cmd: string[],
-  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number } = {},
+  opts: { cwd?: string; env?: Record<string, string>; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
   const result = await execAsync(cmd, opts)
   if (result.timedOut) throw new Error(`${cmd.join(" ")} timed out after ${opts.timeoutMs}ms`)

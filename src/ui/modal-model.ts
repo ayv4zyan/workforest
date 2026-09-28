@@ -5,8 +5,9 @@ import { settingsFocusOrder, type SettingsFocus } from "./settings-modal.tsx"
 export type ModalFocus = "input" | "source" | "rename-folder" | "server" | "stop-all" | "submit" | "cancel" | SettingsFocus
 
 export type Modal =
-  | { kind: "settings"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
+  | { kind: "settings"; section: "autoRename" | "ship"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
   | { kind: "auto-rename" }
+  | { kind: "ship"; source: string; branches: string[]; branchOpen?: boolean; evidence?: string; error?: string; tree: GitWorktree }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; source: string; branches: string[]; branchOpen?: boolean; error?: string }
   | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
@@ -21,6 +22,7 @@ export type Modal =
 export function modalFocusables(current: Modal): ModalFocus[] {
   if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))
   if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
+  if (current.kind === "ship") return ["source", "submit", "cancel"]
   if (current.kind === "new-tree") return ["input", "source", "submit", "cancel"]
   if (current.kind === "stop-picker") return ["server", "submit", "stop-all", "cancel"]
   return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
@@ -28,7 +30,7 @@ export function modalFocusables(current: Modal): ModalFocus[] {
 
 export function modalArrowFocus(current: Modal, focus: ModalFocus, name: string): ModalFocus | null {
   const hasInput = "value" in current
-  if ((current.kind === "rename" || current.kind === "new-tree") && (name === "up" || name === "down")) {
+  if ((current.kind === "rename" || current.kind === "new-tree" || current.kind === "ship") && (name === "up" || name === "down")) {
     const items = modalFocusables(current)
     const index = Math.max(0, items.indexOf(focus))
     return items[(index + (name === "up" ? -1 : 1) + items.length) % items.length]!
@@ -46,6 +48,7 @@ export function modalTitle(current: Modal): string {
   switch (current.kind) {
     case "settings": return "Settings"
     case "auto-rename": return "auto rename"
+    case "ship": return "Ship"
     case "add-project": return "add project"
     case "new-tree": return "new worktree"
     case "rename": return "rename worktree"
@@ -64,6 +67,7 @@ export function modalBody(current: Modal, selectedProject: Project | null, selec
     case "settings": return ""
     case "auto-rename": return "Reviewing worktree changes. You can edit the suggested name before renaming."
     case "add-project": return "Path to the main checkout"
+    case "ship": return `Commit changes, push, and create a PR. Fixes get separate commits. ${current.evidence === "inferred" ? "Target inferred from history; check it." : current.evidence ? `Source: ${current.evidence}.` : "Choose the target branch."}`
     case "new-tree": return "Name is the new directory and branch. Source is the branch it starts from."
     case "rename": return "Renames the branch. Renaming the folder changes its path; apps using this worktree may need to reopen it."
     case "delete": {
@@ -105,7 +109,7 @@ export function modalSize(current: Modal, terminalWidth: number, terminalHeight:
     ? Math.floor(terminalHeight * 0.7)
     : current.kind === "stop-picker" ? Math.min(22, 14 + current.rows.length)
     : current.kind === "settings" ? terminalHeight - 4
-    : current.kind === "add-project" ? 12 + pathListHeight : current.kind === "new-tree" ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
+    : current.kind === "add-project" ? 12 + pathListHeight : (current.kind === "new-tree" || current.kind === "ship") ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
   const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
   const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
   return {

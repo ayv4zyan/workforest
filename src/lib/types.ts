@@ -21,6 +21,7 @@ export type Config = {
     selectedProjectId?: string
   }
   autoRename?: AutoRenameConfig
+  ship?: AutoRenameConfig
 }
 
 export type GitWorktree = {

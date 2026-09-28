@@ -1,5 +1,7 @@
 import { createSignal, type Accessor, type Setter } from "solid-js"
 import { loadAutoRename, reasoningChoices, renameModels, resolveReasoning, saveAutoRename } from "../lib/auto-rename-settings.ts"
+import { loadShip, saveShip } from "../lib/ship-settings.ts"
+import type { AutoRenameSettings } from "../lib/auto-rename-settings.ts"
 import type { Modal, ModalFocus } from "./modal-model.ts"
 import type { SettingsField } from "./settings-modal.tsx"
 
@@ -19,14 +21,27 @@ export function createSettingsWorkflow(options: {
   const [settingsOpen, setSettingsOpen] = createSignal<SettingsField | null>(null)
   const [settingsHighlight, setSettingsHighlight] = createSignal(0)
   let prompt = ""
+  let drafts: Partial<Record<"autoRename" | "ship", AutoRenameSettings>> = {}
 
   function openSettings() {
     const loaded = loadAutoRename(options.home())
+    drafts = {}
     prompt = loaded.prompt
     setSettingsOpen(null)
     setSettingsHighlight(0)
-    options.setModal({ kind: "settings", ...loaded })
+    options.setModal({ kind: "settings", section: "autoRename", ...loaded })
     options.setModalFocus("provider")
+  }
+
+  function selectSection(section: "autoRename" | "ship") {
+    const current = options.modal()
+    if (current?.kind !== "settings" || current.section === section) return
+    drafts[current.section] = { provider: "codex", model: current.model, reasoning: current.reasoning, prompt }
+    const loaded = drafts[section] ?? (section === "ship" ? loadShip(options.home()) : loadAutoRename(options.home()))
+    prompt = loaded.prompt
+    setSettingsOpen(null)
+    options.setModal({ kind: "settings", section, ...loaded })
+    options.setModalFocus("section")
   }
 
   function toggleSettings(field: SettingsField) {
@@ -57,10 +72,12 @@ export function createSettingsWorkflow(options: {
     const current = options.modal()
     if (current?.kind !== "settings") return
     try {
-      saveAutoRename(options.home(), { provider: "codex", model: current.model, reasoning: current.reasoning, prompt })
+      drafts[current.section] = { provider: "codex", model: current.model, reasoning: current.reasoning, prompt }
+      if (drafts.autoRename) saveAutoRename(options.home(), drafts.autoRename)
+      if (drafts.ship) saveShip(options.home(), drafts.ship)
       setSettingsOpen(null)
       options.setModal(null)
-      options.setStatus("saved auto-rename settings")
+      options.setStatus(current.section === "ship" ? "saved Ship settings" : "saved auto-rename settings")
     } catch {
       options.setModal({ ...current, error: "Couldn't save settings" })
       options.setModalFocus("retry")
@@ -70,6 +87,6 @@ export function createSettingsWorkflow(options: {
   return {
     settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
     setPrompt: (value: string) => { prompt = value },
-    openSettings, toggleSettings, pickSettings, saveSettings,
+    openSettings, selectSection, toggleSettings, pickSettings, saveSettings,
   }
 }

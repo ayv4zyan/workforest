@@ -1,6 +1,7 @@
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
+import type { PullRequest } from "../lib/branch-metadata.ts"
 import { displayPath } from "../lib/display-path.ts"
 import { nextIndex } from "../lib/select-hit.ts"
 import { serverStatus, serversForWorktree } from "../lib/servers.ts"
@@ -21,7 +22,9 @@ type Props = {
   collapsedGroups: Record<TreeGroup, boolean>
   servers: ServerRow[]
   pullingPath: string | null
+  shipping: { path: string; text: string } | null
   on: {
+    openPR: (url: string) => void
     focus: () => void
     new: () => void
     pickEntry: (index: number) => void
@@ -48,7 +51,7 @@ export function TreePane(props: Props) {
   const treeCount = () => props.trees.reduce((count, entry) => count + (entry.kind === "group" ? entry.count : 0), 0)
 
   createEffect(() => {
-    if (!props.pullingPath) return
+    if (!props.pullingPath && !props.shipping) return
     const timer = setInterval(() => {
       setSpinnerFrame((value) => (value + 1) % spinnerFrames.length)
       renderer.requestRender()
@@ -105,7 +108,9 @@ export function TreePane(props: Props) {
             const name = () => {
               const [indicator, ...statusParts] = serverStatus(serversForWorktree(props.servers, tree.path)).split(" ")
               const status = statusParts.join(" ")
-              const pulling = props.pullingPath === tree.path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
+              const pulling = props.shipping?.path === tree.path
+                ? ` ${spinnerFrames[spinnerFrame()]} ${props.shipping.text}`
+                : props.pullingPath === tree.path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
               return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${pulling}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
             }
             return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
@@ -122,7 +127,13 @@ export function TreePane(props: Props) {
                 if (event.button === 2) props.on.menu(event.x, event.y)
               }}
             >
-              <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+              <box height={1} flexDirection="row" minWidth={0}>
+                <text flexShrink={1} minWidth={0} height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+                <Show when={tree.pr}>{(pr: () => PullRequest) =>
+                  <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact variant="accent"
+                    disabled={props.blocked} onPress={() => props.on.openPR(pr().url)} />
+                }</Show>
+              </box>
               <Show when={selected()}>
                 <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={theme.selectedFg} selectable={false}>{`   ${tree.isMain ? `${tree.branch ?? "detached"}  ` : !tree.branch ? "detached  " : ""}${displayPath(tree.path)}`}</text>
               </Show>
