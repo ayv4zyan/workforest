@@ -3,7 +3,8 @@ import { isAbsolute, relative, resolve } from "node:path"
 import { execOkAsync } from "./exec.ts"
 import { gitNetworkEnv } from "./git.ts"
 
-const paths = ["--", ".", ":(exclude,glob)**/.env", ":(exclude,glob)**/.env.*"]
+export const secretFileGlobs = ["**/.env", "**/.env.*"]
+const paths = ["--", ".", ...secretFileGlobs.map((pattern) => `:(exclude,glob)${pattern}`)]
 const clip = (text: string, limit: number) => text.length > limit ? `${text.slice(0, limit)}\n[truncated; inspect the remaining changes before claiming a complete review]` : text
 
 // Supply actual evidence even when a custom writing prompt forbids tool use.

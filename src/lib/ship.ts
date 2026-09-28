@@ -5,6 +5,7 @@ import { execAsync, execOkAsync } from "./exec.ts"
 import { git, gitNetworkEnv } from "./git.ts"
 import { parsePullRequest, savePullRequest, type PullRequest } from "./branch-metadata.ts"
 import { parseShipPlan, runShipAgent, type ShipAgentRequest, type ShipPlan } from "./ship-agent.ts"
+import { secretFileGlobs } from "./ship-context.ts"
 import type { ShipSettings } from "./ship-settings.ts"
 import type { GitWorktree } from "./types.ts"
 
@@ -70,9 +71,9 @@ export async function shipWorktree(options: {
   if (!/^[a-f0-9]{40,64}$/.test(baseRef)) throw new Error("Could not resolve the PR target commit")
   await gitCommand(["fetch", "--no-tags", "--no-write-fetch-head", remote, `refs/heads/${base}`])
   const listPR = async () => {
-    const rows: unknown = JSON.parse(await command(["gh", "pr", "list", "--repo", repo.url, "--head", branch, "--state", "open", "--json", "number,url,baseRefName"]))
+    const rows: unknown = JSON.parse(await command(["gh", "pr", "list", "--repo", repo.url, "--head", branch, "--state", "open", "--json", "number,url,baseRefName,isCrossRepository"]))
     if (!Array.isArray(rows)) throw new Error("GitHub returned invalid pull requests")
-    return rows.map((row) => {
+    return rows.filter((row) => row?.isCrossRepository === false).map((row) => {
       const pr = parsePullRequest({ ...row, base: row.baseRefName })
       if (!pr || !pr.url.startsWith(`${repo.url}/pull/`)) throw new Error("GitHub returned an invalid pull request")
       return pr
@@ -100,6 +101,9 @@ export async function shipWorktree(options: {
     }
     const commit = async (plan: ShipPlan) => {
       await assertBranch()
+      if ((await gitCommand(["status", "--porcelain", "--", ...secretFileGlobs.map((pattern) => `:(glob)${pattern}`)])).trim()) {
+        throw new Error("Uncommitted .env files are excluded from AI review and cannot be automatically committed. Review them manually and ignore untracked secrets before shipping.")
+      }
       onProgress(plan.commitStatus)
       await gitCommand(["add", "--all", "--", "."])
       writeFileSync(join(dir, "commit.txt"), plan.commitMessage)
@@ -142,12 +146,13 @@ ${push.stderr}`.trim().slice(-16000)}`)
       if (await status()) await commit(plan)
       // A repair can fix local dependencies without changing tracked files.
     }
-    plan = await ask("describe")
     onProgress(plan.prStatus)
     existing = await listPR()
     if (existing.length > 1 || existing[0] && existing[0].base !== base) throw new Error("Open PR target changed during Ship; pushed commits have been kept")
     let pr = existing[0]
     if (!pr) {
+      plan = await ask("describe")
+      onProgress(plan.prStatus)
       writeFileSync(join(dir, "pr.md"), plan.body)
       await command(["gh", "pr", "create", "--repo", repo.url, "--head", branch, "--base", base, "--title", plan.title, "--body-file", join(dir, "pr.md")])
       pr = (await listPR()).find((row) => row.base === base)

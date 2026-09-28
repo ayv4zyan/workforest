@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createWorktree, gitOk, renameWorktree } from "./git.ts"
@@ -56,7 +56,7 @@ if (args[0] === 'repo') console.log(JSON.stringify({url:'https://github.com/test
 else if (args[1] === 'list') console.log(await Bun.file(${JSON.stringify(prFile)}).text())
 else if (args[1] === 'create') {
   const base = args[args.indexOf('--base') + 1]
-  await Bun.write(${JSON.stringify(prFile)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:base}]))
+  await Bun.write(${JSON.stringify(prFile)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:base,isCrossRepository:false}]))
   console.log('https://github.com/test/demo/pull/450')
 }
 `)
@@ -121,7 +121,12 @@ test("real pre-push failure gets a separate repair commit, retries hooks, and pe
   expect(readFileSync(calls, "utf8")).toContain('"--base","develop"')
   expect(gitOk(repo, ["config", "--get", "branch.feature.workforest-source"]).trim()).toBe("develop")
   // Repeated Ship updates the existing branch/PR without empty commits or duplicate PRs.
-  await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })
+  const repeatedPhases: string[] = []
+  await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) => {
+    repeatedPhases.push(request.phase)
+    return plan
+  } })
+  expect(repeatedPhases).toEqual(["prepare"])
   expect(readFileSync(calls, "utf8").split('\n').filter((line) => line.includes('"create"'))).toHaveLength(1)
 }, 20000)
 
@@ -156,10 +161,71 @@ test("remote rejection does not trigger AI repairs", async () => {
 
 test("an existing PR with a different target stops before any commits", async () => {
   const { tree, prFile } = fixture()
-  writeFileSync(prFile, JSON.stringify([{ number: 450, url: "https://github.com/test/demo/pull/450", baseRefName: "main" }]))
+  writeFileSync(prFile, JSON.stringify([{ number: 450, url: "https://github.com/test/demo/pull/450", baseRefName: "main", isCrossRepository: false }]))
   writeFileSync(join(tree.path, "app.txt"), "user work")
   await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => { throw new Error("must not run") } })).rejects.toThrow("targets main")
   expect(gitOk(tree.path, ["show", "HEAD:app.txt"])).toBe("original")
+})
+
+test.each([false, true])("fork PRs with the same branch name are ignored (own PR exists: %s)", async (ownPRExists) => {
+  const { tree, prFile, calls } = fixture()
+  const forkPRs = [
+    { number: 100, url: "https://github.com/test/demo/pull/100", baseRefName: "main", isCrossRepository: true },
+    { number: 101, url: "https://github.com/test/demo/pull/101", baseRefName: "develop", isCrossRepository: true },
+  ]
+  writeFileSync(prFile, JSON.stringify(ownPRExists ? [...forkPRs, { number: 450, url: "https://github.com/test/demo/pull/450", baseRefName: "develop", isCrossRepository: false }] : forkPRs))
+  writeFileSync(join(tree.path, "app.txt"), "user feature")
+  const pr = await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })
+  expect(pr.number).toBe(450)
+  expect(await loadPullRequest(tree.path, "feature")).toEqual(pr)
+  const ghCalls = readFileSync(calls, "utf8")
+  expect(ghCalls).toContain("isCrossRepository")
+  expect(ghCalls.includes('"create"')).toBe(!ownPRExists)
+})
+
+test.each(["untracked", "staged", "tracked"])("Ship preserves %s .env changes without committing or pushing them", async (kind) => {
+  const { tree } = fixture()
+  mkdirSync(join(tree.path, "nested"))
+  const file = join(tree.path, kind === "untracked" ? ".env" : "nested/.env.local")
+  if (kind === "tracked") {
+    writeFileSync(file, "TEST_VALUE=old\n")
+    gitOk(tree.path, ["add", "."])
+    gitOk(tree.path, ["commit", "-m", "Existing environment fixture"])
+  }
+  writeFileSync(file, "TEST_VALUE=private\n")
+  if (kind === "staged") gitOk(tree.path, ["add", "."])
+  writeFileSync(join(tree.path, "app.txt"), "user work")
+  const beforeHead = gitOk(tree.path, ["rev-parse", "HEAD"])
+  const beforeStatus = gitOk(tree.path, ["status", "--porcelain"])
+  await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })).rejects.toThrow("Uncommitted .env files")
+  expect(gitOk(tree.path, ["rev-parse", "HEAD"])).toBe(beforeHead)
+  expect(gitOk(tree.path, ["status", "--porcelain"])).toBe(beforeStatus)
+  expect(readFileSync(file, "utf8")).toBe("TEST_VALUE=private\n")
+  expect(gitOk(tree.path, ["ls-remote", "origin", "refs/heads/feature"]).trim()).toBe("")
+})
+
+test("ignored .env files stay local while Ship publishes the feature", async () => {
+  const { tree, remote } = fixture()
+  writeFileSync(join(tree.path, ".gitignore"), ".env\n")
+  writeFileSync(join(tree.path, ".env"), "TEST_VALUE=private\n")
+  writeFileSync(join(tree.path, "app.txt"), "user feature")
+  await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })
+  expect(gitOk(remote, ["show", "feature:app.txt"])).toBe("user feature")
+  expect(gitOk(remote, ["ls-tree", "-r", "--name-only", "feature"])).not.toContain(".env")
+  expect(readFileSync(join(tree.path, ".env"), "utf8")).toBe("TEST_VALUE=private\n")
+})
+
+test("a repair cannot automatically commit .env files either", async () => {
+  const { tree, hook } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "user work")
+  hook("exit 1")
+  await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) => {
+    if (request.phase === "repair") writeFileSync(join(tree.path, ".env.local"), "TEST_VALUE=private\n")
+    return plan
+  } })).rejects.toThrow("Uncommitted .env files")
+  expect(gitOk(tree.path, ["rev-list", "--count", "develop..HEAD"]).trim()).toBe("1")
+  expect(gitOk(tree.path, ["status", "--porcelain"]).trim()).toBe("?? .env.local")
+  expect(gitOk(tree.path, ["ls-remote", "origin", "refs/heads/feature"]).trim()).toBe("")
 })
 
 test("Codex JSONL streams arbitrary AI statuses and uses scoped permissions", async () => {
@@ -200,6 +266,20 @@ test("AI cancellation and timeout terminate work; malformed events never become 
   expect(agentProgress("not JSON")).toBeNull()
   expect(() => parseShipPlan("{}")).toThrow()
   expect(prePushFailed('{"event":"child_exit","code":1}')).toBe(false)
+})
+
+test("cancellation after context collection prevents Codex from starting", async () => {
+  const { tree, bin, root } = fixture()
+  const started = join(root, "codex-started")
+  script(join(bin, "codex"), `await Bun.write(${JSON.stringify(started)}, 'started')`)
+  const controller = new AbortController()
+  const settings = { ...defaultShip(), get prompt() {
+    // Prompt construction happens after context collection, immediately before spawn.
+    controller.abort(new Error("Cancelled after context collection"))
+    return "Review the changes"
+  } }
+  await expect(runShipAgent({ cwd: tree.path, branch: "feature", base: "develop", settings, phase: "prepare", onProgress: () => {}, signal: controller.signal })).rejects.toThrow("Cancelled after context collection")
+  expect(existsSync(started)).toBe(false)
 })
 
 test("initial commit hook failure preserves user changes and never starts a repair", async () => {

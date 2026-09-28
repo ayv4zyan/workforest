@@ -102,8 +102,13 @@ detached trees are skipped. 2-minute timeout.
 Worktree menu → **Git** → **Ship**. Choose the PR target, then click **Ship** to
 commit all non-ignored changes, push, and create a ready-for-review GitHub PR.
 Requires authenticated `codex` and `gh` CLIs (`codex login`, `gh auth login`).
-An existing open PR for the branch is reused; if its target differs, choose that
-target before shipping again.
+An existing open PR for the branch in the push repository is reused without
+regenerating its description; if its target differs, choose that target before
+shipping again. Same-named branches in other forks are ignored.
+
+Ship stops before automatically committing uncommitted `.env` or `.env.*` files,
+including those in subdirectories. Review these files manually and ignore local
+secrets before shipping. Ignored, untracked environment files stay local.
 
 Your changes are committed first. If a pre-push hook fails, Codex investigates
 and fixes the failure; each repair is committed separately before another push.

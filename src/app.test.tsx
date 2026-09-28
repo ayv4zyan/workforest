@@ -1495,7 +1495,7 @@ test.serial("Git hover opens Ship; target defaults to source, AI progress stays 
 const args = process.argv.slice(2)
 if (args[0] === 'repo') console.log(JSON.stringify({url:'https://github.com/test/demo'}))
 else if (args[1] === 'list') console.log(await Bun.file(${JSON.stringify(prs)}).text())
-else if (args[1] === 'create') await Bun.write(${JSON.stringify(prs)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:args[args.indexOf('--base')+1]}]))
+else if (args[1] === 'create') await Bun.write(${JSON.stringify(prs)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:args[args.indexOf('--base')+1],isCrossRepository:false}]))
 `)
   shim("codex", `
 const args = process.argv.slice(2)
