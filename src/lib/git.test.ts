@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { execOk } from "./exec.ts"
@@ -10,6 +10,7 @@ import {
   listWorktrees,
   mainWorktreeBranch,
   parseWorktreeList,
+  pullWorktree,
   removeWorktree,
   renameWorktree,
   samePath,
@@ -141,4 +142,35 @@ test("rename defaults to branch only even when a sibling folder has the new name
   expect(renamed.branch).toBe("agent/occupied")
   expect(listWorktrees(repo).find((row) => row.path === tree.path)?.branch).toBe("agent/occupied")
   expect(existsSync(join(tree.path, "local.txt"))).toBe(true)
+})
+
+test("pullWorktree fast-forwards that worktree and leaves the main checkout behind", async () => {
+  const origin = initRepo()
+  const clone = mkdtempSync(join(tmpdir(), "wf-clone-"))
+  rmSync(clone, { recursive: true })
+  execOk(["git", "clone", origin, clone])
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: clone, home, projectId: "demo", name: "feature-pull" })
+  execOk(["git", "branch", "--set-upstream-to=origin/main"], { cwd: tree.path })
+  writeFileSync(join(origin, "remote.txt"), "from origin\n")
+  execOk(["git", "add", "."], { cwd: origin })
+  execOk(["git", "commit", "-m", "remote"], { cwd: origin })
+
+  const output = await pullWorktree(tree)
+  expect(output.toLowerCase()).toContain("fast-forward")
+  expect(existsSync(join(tree.path, "remote.txt"))).toBe(true)
+  expect(existsSync(join(clone, "remote.txt"))).toBe(false)
+
+  const main = listWorktrees(clone).find((row) => row.isMain)!
+  const mainOutput = await pullWorktree(main)
+  expect(mainOutput.toLowerCase()).toContain("fast-forward")
+  expect(existsSync(join(clone, "remote.txt"))).toBe(true)
+})
+
+test("pullWorktree rejects a detached worktree and a branch with no upstream", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-pull" })
+  await expect(pullWorktree({ ...tree, branch: null })).rejects.toThrow("no branch to pull")
+  await expect(pullWorktree(tree)).rejects.toThrow(/no tracking information/i)
 })

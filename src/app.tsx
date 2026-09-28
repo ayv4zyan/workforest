@@ -73,9 +73,9 @@ export function App() {
     openSettings: openSettingsWorkflow, toggleSettings, pickSettings, saveSettings,
   } = settingsWorkflow
   const {
-    renaming, abortRename, copyWorktreePath, retryWorktreeSetup,
+    renaming, abortRename, copyWorktreePath, retryWorktreeSetup, pullingPath,
     openNewTree, toggleSourceMenu, pickSource, openRename, openManualRename,
-    autoRename, openDelete, submit: submitWorktree, deleteTree,
+    autoRename, openDelete, pullTree, submit: submitWorktree, deleteTree,
   } = createWorktreeWorkflow({
     home: dataDir, renderer,
     workspace: { selectedProject, selectedTree, selectProject, setSelectedTreePath,
@@ -231,8 +231,13 @@ export function App() {
     }
     const tree = selectedTree()
     const linked = Boolean(tree && !tree.isMain) && !busy()
+    const running = activeServers().length > 0
     return [
       { id: "btn-rename", label: "Rename", trailingLabel: "›", disabled: !linked, onPress: openRenameSubmenu },
+      running
+        ? { id: "btn-menu-stop", label: "Stop", variant: "danger", disabled: !tree || busy(), onPress: toggleServer }
+        : { id: "btn-menu-run", label: "Run", variant: "accent", disabled: !tree || busy(), onPress: toggleServer },
+      { id: "btn-pull", label: "Pull", disabled: !tree?.branch || busy(), onPress: pullTree },
       { id: "btn-copy-path", label: "Copy path", disabled: !tree, onPress: copyWorktreePath },
       { id: "btn-create-tree", label: "Create worktree", disabled: !tree || busy(), onPress: () => openNewTree(tree?.branch ?? undefined) },
       { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
@@ -550,7 +555,7 @@ export function App() {
             busy={busy()} blocked={Boolean(modal() || menu())}
             query={queries().trees} project={selectedProject()}
             trees={treeEntries()} selectedIndex={treeIndex()} focusedGroup={focusedGroup()}
-            collapsedGroups={collapsedGroups()} servers={servers()}
+            collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()}
             on={{
               focus: () => focusPane("trees"), new: () => openNewTree(),
               pickEntry, pickTree, toggleGroup,

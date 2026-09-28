@@ -200,3 +200,19 @@ export async function removeWorktreeAsync(opts: { repoPath: string; tree: GitWor
   args.push(tree.path)
   await execOkAsync(["git", ...args], { cwd: repoPath })
 }
+
+function gitPullEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value
+  }
+  // Fail credential prompts instead of hanging the TUI, and accept the default merge message.
+  env.GIT_TERMINAL_PROMPT = "0"
+  env.GIT_MERGE_AUTOEDIT = "no"
+  return env
+}
+
+export async function pullWorktree(tree: GitWorktree): Promise<string> {
+  if (!tree.branch) throw new Error("Detached worktree has no branch to pull")
+  return execOkAsync(["git", "pull"], { cwd: tree.path, env: gitPullEnv() })
+}
