@@ -1,14 +1,15 @@
 import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js"
 import { loadPullRequest, loadPullRequestState, savePullRequestState, type PullRequest, type PullRequestState } from "../lib/branch-metadata.ts"
-import { loadConfig, setSelectedProjectId as saveSelectedProjectId, setWorktreePinned } from "../lib/config.ts"
+import { loadConfig, moveProject, moveWorktreeInOrder, syncWorktreeOrder, setSelectedProjectId as saveSelectedProjectId, setWorktreePinned } from "../lib/config.ts"
 import { isDirtyAsync, listWorktreesAsync, worktreeDisplayName } from "../lib/git.ts"
 import { collectServersAsync, serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
+import { sortWorktrees } from "../lib/worktree-order.ts"
 
 export type Pane = "projects" | "trees"
 export type TreeRow = GitWorktree & { dirty: boolean; displayName: string; pr?: PullRequest | null; prState?: PullRequestState | null }
 export type TreeGroup = "pinned" | "running" | "stopped"
-export type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
+export type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; group: TreeGroup; tree: TreeRow }
 
 export function createWorkspace(options: {
   home: () => string
@@ -24,6 +25,7 @@ export function createWorkspace(options: {
   const [pinnedPaths, setPinnedPaths] = createSignal<string[]>([])
   const [unpinnedMainPaths, setUnpinnedMainPaths] = createSignal<string[]>([])
   const [servers, setServers] = createSignal<ServerRow[]>([])
+  const [worktreeOrder, setWorktreeOrder] = createSignal<string[]>([])
 
   const matches = (query: string, name: string) => name.toLowerCase().includes(query.toLowerCase())
   const filteredProjects = createMemo(() => projects().filter((project) => matches(options.queries().projects, project.name)))
@@ -67,7 +69,7 @@ export function createWorkspace(options: {
     }
   }
   const groupedTrees = createMemo(() => {
-    const sorted = [...filteredTrees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
+    const sorted = sortWorktrees(filteredTrees(), worktreeOrder())
     const pinned: TreeRow[] = []
     const running: TreeRow[] = []
     const stopped: TreeRow[] = []
@@ -85,7 +87,7 @@ export function createWorkspace(options: {
       if (group === "pinned" && !groupedTrees().pinned.length) continue
       if (options.queries().trees && !groupedTrees()[group].length) continue
       entries.push({ kind: "group", group, count: groupedTrees()[group].length })
-      if (options.queries().trees || !collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
+      if (options.queries().trees || !collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", group, tree })))
     }
     return entries
   })
@@ -113,6 +115,25 @@ export function createWorkspace(options: {
     setSelectedProjectId(projectId)
     try {
       saveSelectedProjectId(options.home(), projectId)
+    } catch (error) {
+      options.onError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function reorderProject(projectId: string, targetId: string, placement: "before" | "after") {
+    try {
+      setProjects(moveProject(options.home(), projectId, targetId, placement))
+    } catch (error) {
+      options.onError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function reorderPinnedTree(path: string, targetPath: string, placement: "before" | "after") {
+    const project = selectedProject()
+    if (!project || !isPinned(path) || !isPinned(targetPath) ||
+      !trees().some((tree) => tree.path === path) || !trees().some((tree) => tree.path === targetPath)) return
+    try {
+      setWorktreeOrder(moveWorktreeInOrder(options.home(), project.id, path, targetPath, placement))
     } catch (error) {
       options.onError(error instanceof Error ? error.message : String(error))
     }
@@ -165,10 +186,12 @@ export function createWorkspace(options: {
           ? config.ui!.selectedProjectId!
           : (config.projects[0]?.id ?? null)
       setSelectedProjectId(currentId)
+      setWorktreeOrder(config.projects.find((project) => project.id === currentId)?.worktreeOrder ?? [])
       setProjects(config.projects)
+      const failedListings = new Set<string>()
       const entriesPending = config.projects.map(async (project) => {
         try { return [project.id, await listWorktreesAsync(project.path)] as const }
-        catch { return [project.id, [] as GitWorktree[]] as const }
+        catch { failedListings.add(project.id); return [project.id, [] as GitWorktree[]] as const }
       })
       const selectedIndex = config.projects.findIndex((project) => project.id === currentId)
       const selectedTrees = selectedIndex < 0 ? [] : (await entriesPending[selectedIndex])?.[1] ?? []
@@ -185,6 +208,9 @@ export function createWorkspace(options: {
         row.prState = cached?.state ?? row.pr.state ?? null
       }
       if (generation !== refreshGeneration || selectedProjectId() !== currentId) return
+      if (currentId && !failedListings.has(currentId)) {
+        setWorktreeOrder(syncWorktreeOrder(options.home(), currentId, sortWorktrees(listed, []).map((tree) => tree.path)))
+      }
       displayedProjectId = currentId
       setTrees(listed)
       refreshPrStates(listed, periodic)
@@ -215,10 +241,10 @@ export function createWorkspace(options: {
   }
 
   return {
-    projects, setProjects, selectedProjectId, selectProject,
+    projects, setProjects, selectedProjectId, selectProject, reorderProject,
     trees, setTrees, selectedTreePath, setSelectedTreePath,
     focusedGroup, collapsedGroups, servers, filteredProjects, filteredTrees, isPinned, pinTree,
-    selectedProject, selectedTree, treeServers, activeServers, treeEntries,
+    selectedProject, selectedTree, treeServers, activeServers, treeEntries, reorderPinnedTree,
     toggleGroup, pickEntry, pickTree, refresh, loadTreesFor,
   }
 }
