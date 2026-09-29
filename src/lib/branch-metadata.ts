@@ -1,8 +1,9 @@
 import { git, gitOk, listBranches } from "./git.ts"
-import { execAsync } from "./exec.ts"
+import { execAsync, execOkAsync } from "./exec.ts"
 
 export type SourceBranch = { branch: string; evidence: "saved" | "reflog" | "inferred" }
-export type PullRequest = { number: number; url: string; base: string }
+export type PullRequestState = "OPEN" | "MERGED" | "CLOSED"
+export type PullRequest = { number: number; url: string; base: string; state?: PullRequestState }
 
 export function targetBranches(cwd: string, branch: string): string[] {
   const remotes = gitOk(cwd, ["for-each-ref", "--format=%(refname:short)", "refs/remotes"])
@@ -50,14 +51,49 @@ export function parsePullRequest(value: unknown): PullRequest | null {
     const url = new URL(pr.url)
     if (url.protocol !== "https:" || url.username || url.password || !url.pathname.endsWith(`/pull/${pr.number}`)) return null
   } catch { return null }
-  return pr as PullRequest
+  return { number: pr.number!, url: pr.url, base: pr.base,
+    ...(pr.state === "OPEN" || pr.state === "MERGED" || pr.state === "CLOSED" ? { state: pr.state } : {}) }
 }
 export function savePullRequest(cwd: string, branch: string, pr: PullRequest): void {
   if (!parsePullRequest(pr)) throw new Error("Invalid pull request link")
-  gitOk(cwd, ["config", "--local", `branch.${branch}.workforest-pr`, JSON.stringify(pr)])
+  gitOk(cwd, ["config", "--local", `branch.${branch}.workforest-pr`, JSON.stringify({ ...pr, state: pr.state ?? "OPEN" })])
 }
 export async function loadPullRequest(cwd: string, branch: string | null): Promise<PullRequest | null> {
   if (!branch) return null
   const result = await execAsync(["git", "config", "--local", "--get", `branch.${branch}.workforest-pr`], { cwd })
-  try { return parsePullRequest(JSON.parse(result.stdout)) } catch { return null }
+  try {
+    const pr = parsePullRequest(JSON.parse(result.stdout))
+    return pr ? { ...pr, state: pr.state ?? "OPEN" } : null
+  } catch { return null }
+}
+
+export function savePullRequestState(cwd: string, branch: string, pr: PullRequest, state: PullRequestState): void {
+  const key = `branch.${branch}.workforest-pr`
+  const result = git(cwd, ["config", "--local", "--get", key])
+  let current: PullRequest | null = null
+  try { current = parsePullRequest(JSON.parse(result.stdout)) } catch { /* Ignore missing metadata. */ }
+  if (!current || current.url !== pr.url || current.state === state) return
+  gitOk(cwd, ["config", "--local", key, JSON.stringify({ ...current, state })])
+}
+
+export async function loadPullRequestState(cwd: string, pr: PullRequest): Promise<PullRequestState | null> {
+  try {
+    const result = await execAsync(["gh", "pr", "view", pr.url, "--json", "url,state"], {
+      cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, timeoutMs: 10000,
+    })
+    if (result.exitCode !== 0 || result.timedOut) return null
+    const value: unknown = JSON.parse(result.stdout)
+    if (!value || typeof value !== "object") return null
+    const { url, state } = value as { url?: unknown; state?: unknown }
+    return url === pr.url && (state === "OPEN" || state === "MERGED" || state === "CLOSED") ? state : null
+  } catch { return null }
+}
+
+export async function mergePullRequest(cwd: string, pr: PullRequest): Promise<PullRequestState | null> {
+  const state = await loadPullRequestState(cwd, pr)
+  if (state !== "OPEN") throw new Error(state ? `PR #${pr.number} is ${state.toLowerCase()}` : `Could not verify PR #${pr.number} is open`)
+  await execOkAsync(["gh", "pr", "merge", pr.url, "--merge"], {
+    cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, timeoutMs: 5 * 60 * 1000,
+  })
+  return loadPullRequestState(cwd, pr)
 }

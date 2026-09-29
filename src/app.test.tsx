@@ -4,13 +4,14 @@ import { realpathSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, wr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
-import type { Renderable } from "@opentui/core"
+import { BoxRenderable, RGBA, TextAttributes, TextRenderable, type Renderable } from "@opentui/core"
 import { addProject, loadConfig, setProjectStartCommand } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
 import { collectServers, startServer, stopServer, loadRunRecords } from "./lib/servers.ts"
 import { rememberPort } from "./lib/ports.ts"
 import { App } from "./app.tsx"
 import { ActionButton } from "./ui/button.tsx"
+import { theme } from "./theme.ts"
 
 function findText(frame: string, needle: string): { x: number; y: number } {
   const lines = frame.split("\n")
@@ -1484,8 +1485,9 @@ test.serial("Git hover opens Ship; target defaults to source, AI progress stays 
   const project = addProject(home, repo)
   const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "ship-feature", startPoint: "develop" })
   writeFileSync(join(tree.path, "feature.txt"), "user feature")
-  const prs = join(root, "prs.json"), opened = join(root, "opened.txt")
+  const prs = join(root, "prs.json"), opened = join(root, "opened.txt"), prState = join(root, "pr-state.txt"), merged = join(root, "merged.json")
   writeFileSync(prs, "[]")
+  writeFileSync(prState, "OPEN")
   const shim = (name: string, body: string) => {
     const file = join(bin, name)
     writeFileSync(file, `#!${process.execPath}\n${body}`)
@@ -1496,6 +1498,11 @@ const args = process.argv.slice(2)
 if (args[0] === 'repo') console.log(JSON.stringify({url:'https://github.com/test/demo'}))
 else if (args[1] === 'list') console.log(await Bun.file(${JSON.stringify(prs)}).text())
 else if (args[1] === 'create') await Bun.write(${JSON.stringify(prs)}, JSON.stringify([{number:450,url:'https://github.com/test/demo/pull/450',baseRefName:args[args.indexOf('--base')+1],isCrossRepository:false}]))
+else if (args[1] === 'view') console.log(JSON.stringify({url:args[2],state:(await Bun.file(${JSON.stringify(prState)}).text()).trim()}))
+else if (args[1] === 'merge') {
+  await Bun.write(${JSON.stringify(merged)}, JSON.stringify(args))
+  await Bun.write(${JSON.stringify(prState)}, 'MERGED')
+}
 `)
   shim("codex", `
 const args = process.argv.slice(2)
@@ -1512,6 +1519,16 @@ await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({r
     expect(node).toBeTruthy()
     await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
     await paint(setup)
+  }
+  const badgeHasColor = (color: string) => {
+    const badge = findById(setup.renderer.root, "pr-link-450")
+    const label = badge?.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)
+    return label?.fg.equals(RGBA.fromHex(color)) ?? false
+  }
+  const badgeMatchesRow = () => {
+    const badge = findById(setup.renderer.root, "pr-link-450") as BoxRenderable
+    const row = badge.parent?.parent as BoxRenderable
+    return badge.backgroundColor.equals(row.backgroundColor)
   }
   try {
     for (let i = 0; i < 40 && !setup.captureCharFrame().includes("ship-feature"); i++) await paint(setup)
@@ -1552,12 +1569,33 @@ await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({r
     expect(findById(setup.renderer.root, "btn-cancel-ship")).toBeTruthy()
     for (let i = 0; i < 120 && !findById(setup.renderer.root, "pr-link-450"); i++) await paint(setup)
     expect(findById(setup.renderer.root, "pr-link-450")).toBeTruthy()
+    for (let i = 0; i < 40 && !badgeHasColor(theme.danger); i++) await paint(setup)
+    expect(badgeHasColor(theme.danger)).toBe(true)
+    const badge = findById(setup.renderer.root, "pr-link-450") as BoxRenderable
+    const label = badge.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)!
+    expect(badgeMatchesRow()).toBe(true)
+    expect(label.attributes & TextAttributes.UNDERLINE).toBeTruthy()
     expect(findById(setup.renderer.root, "modal-dialog")).toBeUndefined()
     expect(setup.captureCharFrame().split("\n").find((line) => line.includes("ship-feature"))).toContain("#450")
     expect(gitOk(repo, ["config", "--get", "branch.ship-feature.workforest-source"]).trim()).toBe("develop")
     await click("pr-link-450")
+    expect(badgeMatchesRow()).toBe(true)
     for (let i = 0; i < 20 && !existsSync(opened); i++) await paint(setup)
     expect(await Bun.file(opened).text()).toBe("https://github.com/test/demo/pull/450")
+    const prLink = findById(setup.renderer.root, "pr-link-450")!
+    await setup.mockMouse.click(prLink.x + 2, prLink.y, 2)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "context-menu")?.getChildren().map((child) => child.id)).toEqual(["btn-merge-pr"])
+    expect(findById(setup.renderer.root, "btn-merge-pr")).toBeTruthy()
+    expect(findById(setup.renderer.root, "btn-delete")).toBeUndefined()
+    expect(existsSync(merged)).toBe(false)
+    await click("btn-merge-pr")
+    for (let i = 0; i < 40 && !existsSync(merged); i++) await paint(setup)
+    expect(JSON.parse(await Bun.file(merged).text())).toEqual(["pr", "merge", "https://github.com/test/demo/pull/450", "--merge"])
+    for (let i = 0; i < 40 && !badgeHasColor(theme.selectedFg); i++) await paint(setup)
+    expect(badgeHasColor(theme.selectedFg)).toBe(true)
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("merged PR #450"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("merged PR #450")
   } finally {
     setup.renderer.destroy()
     process.env.PATH = oldPath
@@ -1565,3 +1603,50 @@ await Bun.write(args[args.indexOf('--output-last-message')+1], JSON.stringify({r
     rmSync(root, { recursive: true, force: true })
   }
 }, 20000)
+
+test.serial("PR link uses saved state on startup before GitHub responds", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-pr-state-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME, oldPath = process.env.PATH
+  const home = join(root, "home"), repo = join(root, "repo"), bin = join(root, "bin"), viewDone = join(root, "view-done")
+  mkdirSync(repo)
+  mkdirSync(bin)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "cached-pr" })
+  gitOk(repo, ["config", "--local", "branch.cached-pr.workforest-pr", JSON.stringify({ number: 603, url: "https://github.com/test/demo/pull/603", base: "main" })])
+  const gh = join(bin, "gh")
+  writeFileSync(gh, `#!${process.execPath}\nawait Bun.sleep(1500); await Bun.write(${JSON.stringify(viewDone)}, 'done'); console.log(JSON.stringify({url:'https://github.com/test/demo/pull/603',state:'MERGED'}))`)
+  chmodSync(gh, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  const hasColor = (node: Renderable, color: string) => {
+    const badge = findById(node, "pr-link-603")
+    const label = badge?.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)
+    return label?.fg.equals(RGBA.fromHex(color)) ?? false
+  }
+  try {
+    const first = await testRender(() => <App />, { width: 100, height: 18 })
+    try {
+      for (let i = 0; i < 40 && !findById(first.renderer.root, "pr-link-603"); i++) await paint(first)
+      expect(hasColor(first.renderer.root, theme.danger)).toBe(true)
+      expect(existsSync(viewDone)).toBe(false)
+      for (let i = 0; i < 100 && !hasColor(first.renderer.root, theme.selectedFg); i++) await paint(first)
+      expect(hasColor(first.renderer.root, theme.selectedFg)).toBe(true)
+      expect(JSON.parse(gitOk(repo, ["config", "--local", "--get", "branch.cached-pr.workforest-pr"])).state).toBe("MERGED")
+    } finally { first.renderer.destroy() }
+
+    rmSync(viewDone, { force: true })
+    const second = await testRender(() => <App />, { width: 100, height: 18 })
+    try {
+      for (let i = 0; i < 40 && !findById(second.renderer.root, "pr-link-603"); i++) await paint(second)
+      expect(hasColor(second.renderer.root, theme.selectedFg)).toBe(true)
+      expect(existsSync(viewDone)).toBe(false)
+      for (let i = 0; i < 100 && !existsSync(viewDone); i++) await paint(second)
+    } finally { second.renderer.destroy() }
+  } finally {
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 15000)

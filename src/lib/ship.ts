@@ -101,6 +101,7 @@ export async function shipWorktree(options: {
     }
     const commit = async (plan: ShipPlan) => {
       await assertBranch()
+      if (!plan.commitMessage.trim()) throw new Error("Ship AI did not provide a commit message for changes to commit")
       if ((await gitCommand(["status", "--porcelain", "--", ...secretFileGlobs.map((pattern) => `:(glob)${pattern}`)])).trim()) {
         throw new Error("Uncommitted .env files are excluded from AI review and cannot be automatically committed. Review them manually and ignore untracked secrets before shipping.")
       }

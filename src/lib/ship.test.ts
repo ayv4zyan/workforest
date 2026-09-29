@@ -117,7 +117,7 @@ test("real pre-push failure gets a separate repair commit, retries hooks, and pe
   expect(progress).toContain("fixing app assertion")
   expect(gitOk(tree.path, ["log", "--format=%s", "--reverse", "develop..HEAD"]).trim().split("\n")).toEqual(["User feature", "Fix app assertion"])
   expect(gitOk(remote, ["show", "feature:app.txt"])).toBe("fixed feature")
-  expect(await loadPullRequest(tree.path, "feature")).toEqual(pr)
+  expect(await loadPullRequest(tree.path, "feature")).toEqual({ ...pr, state: "OPEN" })
   expect(readFileSync(calls, "utf8")).toContain('"--base","develop"')
   expect(gitOk(repo, ["config", "--get", "branch.feature.workforest-source"]).trim()).toBe("develop")
   // Repeated Ship updates the existing branch/PR without empty commits or duplicate PRs.
@@ -167,6 +167,30 @@ test("an existing PR with a different target stops before any commits", async ()
   expect(gitOk(tree.path, ["show", "HEAD:app.txt"])).toBe("original")
 })
 
+test("Ship accepts an empty commit message when the branch is already committed", async () => {
+  const { tree } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "committed feature")
+  gitOk(tree.path, ["add", "app.txt"])
+  gitOk(tree.path, ["commit", "-m", "Add committed feature"])
+  const phases: string[] = []
+  const pr = await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) => {
+    phases.push(request.phase)
+    return { ...plan, commitMessage: "" }
+  } })
+  expect(pr.number).toBe(450)
+  expect(phases).toEqual(["prepare", "describe"])
+  expect(gitOk(tree.path, ["log", "-1", "--format=%s"]).trim()).toBe("Add committed feature")
+})
+
+test("Ship requires a commit message before committing uncommitted changes", async () => {
+  const { tree, calls } = fixture()
+  writeFileSync(join(tree.path, "app.txt"), "uncommitted feature")
+  await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => ({ ...plan, commitMessage: "" }) })).rejects.toThrow("did not provide a commit message")
+  expect(gitOk(tree.path, ["show", "HEAD:app.txt"])).toBe("original")
+  expect(gitOk(tree.path, ["status", "--porcelain"])).toBe(" M app.txt\n")
+  expect(readFileSync(calls, "utf8")).not.toContain('"create"')
+})
+
 test.each([false, true])("fork PRs with the same branch name are ignored (own PR exists: %s)", async (ownPRExists) => {
   const { tree, prFile, calls } = fixture()
   const forkPRs = [
@@ -177,7 +201,7 @@ test.each([false, true])("fork PRs with the same branch name are ignored (own PR
   writeFileSync(join(tree.path, "app.txt"), "user feature")
   const pr = await shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })
   expect(pr.number).toBe(450)
-  expect(await loadPullRequest(tree.path, "feature")).toEqual(pr)
+  expect(await loadPullRequest(tree.path, "feature")).toEqual({ ...pr, state: "OPEN" })
   const ghCalls = readFileSync(calls, "utf8")
   expect(ghCalls).toContain("isCrossRepository")
   expect(ghCalls.includes('"create"')).toBe(!ownPRExists)

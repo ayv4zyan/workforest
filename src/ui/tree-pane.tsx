@@ -8,7 +8,7 @@ import { serverStatus, serversForWorktree } from "../lib/servers.ts"
 import type { Project, ServerRow } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
-import type { TreeEntry, TreeGroup } from "./workspace.ts"
+import type { TreeEntry, TreeGroup, TreeRow } from "./workspace.ts"
 
 type Props = {
   focus: { selected: boolean; row: "header" | "panes" | "pane-actions" }
@@ -25,6 +25,7 @@ type Props = {
   shipping: { path: string; text: string } | null
   on: {
     openPR: (url: string) => void
+    prMenu: (tree: TreeRow, pr: PullRequest, x: number, y: number) => void
     focus: () => void
     new: () => void
     pickEntry: (index: number) => void
@@ -113,10 +114,11 @@ export function TreePane(props: Props) {
                 : props.pullingPath === tree.path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
               return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${pulling}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
             }
+            const rowBg = () => selected()
+              ? hoveredIndex() === index ? theme.selectedHoverBg : theme.selectedBg
+              : hoveredIndex() === index ? theme.hoverBg : theme.panel
             return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
-              backgroundColor={selected()
-                ? hoveredIndex() === index ? theme.selectedHoverBg : theme.selectedBg
-                : hoveredIndex() === index ? theme.hoverBg : theme.panel}
+              backgroundColor={rowBg()}
               onMouseOver={() => { setHoveredIndex(index); renderer.setMousePointer("pointer") }}
               onMouseOut={() => { setHoveredIndex(null); renderer.setMousePointer("default") }}
               onMouseDown={(event) => {
@@ -130,8 +132,10 @@ export function TreePane(props: Props) {
               <box height={1} flexDirection="row" minWidth={0}>
                 <text flexShrink={1} minWidth={0} height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
                 <Show when={tree.pr}>{(pr: () => PullRequest) =>
-                  <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact variant="accent"
-                    disabled={props.blocked} onPress={() => props.on.openPR(pr().url)} />
+                  <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact underlined backgroundColor={rowBg()}
+                    variant={tree.prState === "OPEN" ? "danger" : tree.prState === "MERGED" ? "accent" : "default"}
+                    disabled={props.blocked} onPress={() => props.on.openPR(pr().url)}
+                    onContextMenu={(x, y) => props.on.prMenu(tree, pr(), x, y)} />
                 }</Show>
               </box>
               <Show when={selected()}>

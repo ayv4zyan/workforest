@@ -20,6 +20,7 @@ import { createSettingsWorkflow } from "./ui/settings-workflow.ts"
 import { createPathWorkflow } from "./ui/path-workflow.ts"
 import { loadConfig, setProjectPaneWidth } from "./lib/config.ts"
 import { workforestHome } from "./lib/home.ts"
+import { mergePullRequest } from "./lib/branch-metadata.ts"
 
 type FocusRow = "header" | "panes" | "pane-actions"
 type Action = MenuAction
@@ -230,6 +231,17 @@ export function App() {
   }
 
   function menuActions(): Action[] {
+    const currentMenu = menu()
+    if (currentMenu?.pane === "pr") return [
+      { id: "btn-merge-pr", label: "Merge", disabled: busy() || currentMenu.state !== "OPEN",
+        onPress: () => { void runOp(`merging PR #${currentMenu.pr.number}`, async () => {
+          const state = await mergePullRequest(currentMenu.cwd, currentMenu.pr)
+          if (state === "MERGED") return `merged PR #${currentMenu.pr.number}`
+          if (state === "OPEN") return `merge requested for PR #${currentMenu.pr.number}; waiting for GitHub checks or merge queue`
+          return `merge command completed for PR #${currentMenu.pr.number}; verify its status on GitHub`
+        }) },
+      },
+    ]
     if (menu()?.pane === "projects") {
       return [
         { id: "btn-command", label: "Edit start command", disabled: busy(), onPress: openStartCommand },
@@ -574,6 +586,12 @@ export function App() {
             on={{
               focus: () => focusPane("trees"), new: () => openNewTree(),
               openPR: (url) => { void execOkAsync([process.platform === "darwin" ? "open" : "xdg-open", url], { timeoutMs: 10000 }).catch((error) => setStatus(String(error))) },
+              prMenu: (tree, pr, x, y) => {
+                if (modal() || busy()) return
+                pickTree(tree.path)
+                focusPane("trees")
+                openContextMenu({ pane: "pr", x, y, submenu: null, pr, cwd: tree.path, state: tree.prState ?? null })
+              },
               pickEntry, pickTree, toggleGroup,
               menu: (x, y) => openMenu("trees", x, y),
               listLayout: (node, height) => { treeList = node; setTreeListHeight(height) },

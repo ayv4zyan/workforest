@@ -1,6 +1,7 @@
 import { For, Show, createSignal, type Accessor } from "solid-js"
 import type { KeyEvent } from "@opentui/core"
 import { theme } from "../theme.ts"
+import type { PullRequest, PullRequestState } from "../lib/branch-metadata.ts"
 import { ActionButton } from "./button.tsx"
 import type { Pane } from "./workspace.ts"
 
@@ -13,7 +14,9 @@ export type MenuAction = {
   disabled?: boolean
   onPress: () => void
 }
-export type RowMenu = { pane: Pane; x: number; y: number; submenu: "rename" | "git" | null }
+export type RowMenu =
+  | { pane: Pane; x: number; y: number; submenu: "rename" | "git" | null }
+  | { pane: "pr"; x: number; y: number; submenu: null; pr: PullRequest; cwd: string; state: PullRequestState | null }
 
 export function createContextMenu(options: {
   dimensions: Accessor<{ width: number; height: number }>
