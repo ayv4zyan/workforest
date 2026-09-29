@@ -4,6 +4,7 @@ export type Project = {
   path: string
   basePort: number
   startCommand?: string
+  worktreeOrder?: string[]
 }
 
 export type AutoRenameConfig = {

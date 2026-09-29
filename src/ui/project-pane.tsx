@@ -1,10 +1,11 @@
-import { For, Show, createSignal } from "solid-js"
+import { For, Show, createMemo, createSignal } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import { nextIndex } from "../lib/select-hit.ts"
 import type { Project } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
+import { projectListOffset, projectVisibleCount, type ProjectDrag } from "./project-drag.ts"
 
 type Props = {
   width: number
@@ -16,25 +17,27 @@ type Props = {
   query: string
   projects: Project[]
   selectedId: string | null
+  drag: ProjectDrag
   onFocus: () => void
   onAdd: () => void
   onSelect: (id: string) => void
-  onActivate: () => void
   onMenu: (x: number, y: number) => void
   onListLayout: (node: BoxRenderable, height: number) => void
-}
-
-function visibleRows<T>(rows: T[], selected: number, height: number) {
-  const count = Math.max(1, height)
-  const offset = Math.max(0, Math.min(selected - Math.floor(count / 2), rows.length - count))
-  return rows.slice(offset, offset + count).map((row, index) => ({ row, index: offset + index }))
 }
 
 export function ProjectPane(props: Props) {
   const renderer = useRenderer()
   const [listHeight, setListHeight] = createSignal(0)
-  const [hoveredIndex, setHoveredIndex] = createSignal<number | null>(null)
+  const [hoveredId, setHoveredId] = createSignal<string | null>(null)
   const selectedIndex = () => Math.max(0, props.projects.findIndex((project) => project.id === props.selectedId))
+  const projectIds = createMemo(() => props.projects.map((project) => project.id))
+  const offset = () => props.drag.state()?.offset ?? projectListOffset(selectedIndex(), props.projects.length, listHeight())
+  const dragging = () => Boolean(props.drag.state()?.dragging)
+  const insertionTop = () => {
+    const target = props.drag.state()?.target
+    if (!target) return 0
+    return props.projects.findIndex((project) => project.id === target.id) - offset() + (target.placement === "after" ? 1 : 0)
+  }
 
   function wheel(event: MouseEvent) {
     props.onFocus()
@@ -43,6 +46,8 @@ export function ProjectPane(props: Props) {
     const direction = event.scroll?.direction
     const delta = direction === "down" || direction === "right" ? 1 : direction === "up" || direction === "left" ? -1 : 0
     if (!delta) return
+    if (props.drag.scroll(delta)) return
+    props.drag.cancel()
     const project = props.projects[nextIndex(selectedIndex(), props.projects.length, delta)]
     if (project) props.onSelect(project.id)
   }
@@ -76,25 +81,38 @@ export function ProjectPane(props: Props) {
         }}
           flexGrow={1} flexDirection="column" overflow="hidden"
           onMouseScroll={wheel}>
-          <For each={visibleRows(props.projects, selectedIndex(), listHeight())}>{({ row: project, index }) => {
-            const selected = () => index === selectedIndex()
-            return <box height={1} flexShrink={0} overflow="hidden"
-              backgroundColor={selected()
-                ? hoveredIndex() === index ? theme.selectedHoverBg : theme.selectedBg
-                : hoveredIndex() === index ? theme.hoverBg : theme.panel}
-              onMouseOver={() => { setHoveredIndex(index); renderer.setMousePointer("pointer") }}
-              onMouseOut={() => { setHoveredIndex(null); renderer.setMousePointer("default") }}
+          <For each={projectIds()}>{(id, index) => {
+            const selected = () => id === props.selectedId
+            const drop = () => props.drag.state()?.target?.id === id ? props.drag.state()?.target : null
+            const lifted = () => dragging() && props.drag.state()?.id === id
+            // Keep rows mounted while scrolling or refreshing so mouse capture survives a drag.
+            return <box id={`project-row-${id}`} height={1} flexShrink={0} overflow="hidden"
+              visible={index() >= offset() && index() < offset() + projectVisibleCount(listHeight(), dragging())}
+              marginTop={drop()?.placement === "before" ? 1 : 0}
+              marginBottom={drop()?.placement === "after" ? 1 : 0}
+              backgroundColor={lifted() ? theme.panel : selected()
+                ? hoveredId() === id ? theme.selectedHoverBg : theme.selectedBg
+                : hoveredId() === id ? theme.hoverBg : theme.panel}
+              onMouseOver={() => { setHoveredId(id); renderer.setMousePointer(dragging() ? "move" : "pointer") }}
+              onMouseOut={() => { setHoveredId(null); renderer.setMousePointer(dragging() ? "move" : "default") }}
               onMouseDown={(event) => {
                 event.stopPropagation()
                 if (props.blocked || (event.button !== 0 && event.button !== 2)) return
-                const activate = event.button === 0 && selected()
                 props.onFocus()
-                props.onSelect(project.id)
-                if (event.button === 2) props.onMenu(event.x, event.y)
-                if (activate) props.onActivate()
+                if (event.button === 0) props.drag.start(id, event)
+                else {
+                  props.drag.cancel()
+                  props.onSelect(id)
+                  props.onMenu(event.x, event.y)
+                }
               }}
-            ><text width="100%" height={1} overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${project.name}`}</text></box>
+            ><text width="100%" height={1} overflow="hidden" fg={lifted() ? theme.muted : selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${props.projects.find((project) => project.id === id)?.name ?? ""}`}</text></box>
           }}</For>
+          <Show when={dragging() && props.drag.state()?.target}>
+            <box id="project-drop-indicator" position="absolute" left={0} top={insertionTop()}
+              width="100%" height={1} border={["top"]} borderColor={theme.accent}
+              backgroundColor={theme.panel} zIndex={1} />
+          </Show>
         </box>
       </box>
     </Show>

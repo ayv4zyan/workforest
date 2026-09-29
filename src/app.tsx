@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import type { BoxRenderable, InputRenderable } from "@opentui/core"
 import { theme } from "./theme.ts"
@@ -12,7 +12,9 @@ import { createShipWorkflow } from "./ui/ship-workflow.ts"
 import { execOkAsync } from "./lib/exec.ts"
 import { createWorktreeWorkflow } from "./ui/worktree-workflow.ts"
 import { ProjectPane } from "./ui/project-pane.tsx"
+import { createProjectDrag } from "./ui/project-drag.ts"
 import { TreePane } from "./ui/tree-pane.tsx"
+import { createTreeDrag } from "./ui/tree-drag.ts"
 import { createContextMenu, type MenuAction } from "./ui/context-menu.tsx"
 import { createWorkspace, type Pane } from "./ui/workspace.ts"
 import { modalArrowFocus, modalFocusables, type Modal, type ModalFocus } from "./ui/modal-model.ts"
@@ -50,14 +52,27 @@ export function App() {
   const [modalFocus, setModalFocus] = createSignal<ModalFocus>("input")
   const [status, setStatus] = createSignal("")
   const {
-    setProjects, selectedProjectId, selectProject,
+    setProjects, selectedProjectId, selectProject, reorderProject,
     selectedTreePath, setSelectedTreePath, focusedGroup, collapsedGroups, servers,
     filteredProjects, selectedProject, selectedTree,
-    treeServers, activeServers, treeEntries, toggleGroup, pickEntry, isPinned, pinTree,
+    treeServers, activeServers, treeEntries, toggleGroup, pickEntry, isPinned, pinTree, reorderPinnedTree,
     pickTree, refresh, loadTreesFor,
   } = createWorkspace({ home: dataDir, queries, onError: setStatus })
   const [busy, setBusy] = createSignal(false)
   const [modal, setModal] = createSignal<Modal | null>(null)
+  const projectDrag = createProjectDrag({
+    projects: filteredProjects, selectedId: selectedProjectId, list: () => projectList,
+    blocked: () => Boolean(modal() || menu()), canReorder: () => !busy(),
+    onSelect: (id) => { treeDrag.cancel(); selectProject(id); loadTreesFor(id) },
+    onActivate: () => focusPane("trees"), onReorder: reorderProject,
+  })
+  const treeDrag = createTreeDrag({
+    entries: treeEntries, selectedPath: () => focusedGroup() ? null : selectedTreePath(),
+    selectedIndex: () => treeIndex(), projectId: selectedProjectId, list: () => treeList,
+    blocked: () => Boolean(modal() || menu()), canReorder: () => !busy(),
+    onSelect: (path) => { projectDrag.cancel(); pickTree(path) }, onReorder: reorderPinnedTree,
+  })
+  createEffect(() => renderer.setMousePointer(projectDrag.state()?.dragging || treeDrag.state()?.dragging ? "move" : "default"))
   const { openAddProject, openUnregister, submitAddProject, unregister } = createProjectWorkflow({
     home: dataDir,
     workspace: { selectedProject, selectProject, refresh },
@@ -381,6 +396,11 @@ export function App() {
   }
 
   useKeyboard((key) => {
+    if (projectDrag.state() || treeDrag.state()) {
+      projectDrag.cancel()
+      treeDrag.cancel()
+      if (key.name === "escape") return
+    }
     if (key.name === "q" && key.ctrl) {
       quit()
       return
@@ -478,7 +498,10 @@ export function App() {
   const treeIndex = () => Math.max(0, treeEntries().findIndex((entry) => entry.kind === "group" ? entry.group === focusedGroup() : !focusedGroup() && entry.tree.path === selectedTreePath()))
 
   return (
-    <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}>
+    <box width="100%" height="100%" flexDirection="column" backgroundColor={theme.bg}
+      onMouseDrag={(event) => { projectDrag.move(event); treeDrag.move(event) }}
+      onMouseDragEnd={(event) => { projectDrag.end(event); treeDrag.end(event) }}
+      onMouseUp={(event) => { projectDrag.end(event); treeDrag.end(event) }}>
       <box height={3} zIndex={2} paddingLeft={1} paddingRight={1} flexDirection="row" alignItems="center" justifyContent="space-between" backgroundColor={theme.header}>
         <text fg={theme.accent} selectable={false}>Workforest</text>
         <box
@@ -534,10 +557,9 @@ export function App() {
             selectedPane={pane() === "projects"}
             actionActive={pane() === "projects" && focusRow() === "pane-actions"}
             busy={busy()} blocked={Boolean(modal() || menu())}
-            query={queries().projects} projects={filteredProjects()} selectedId={selectedProjectId()}
+            query={queries().projects} projects={filteredProjects()} selectedId={selectedProjectId()} drag={projectDrag}
             onFocus={() => focusPane("projects")} onAdd={openAddProject}
             onSelect={(id) => { selectProject(id); loadTreesFor(id) }}
-            onActivate={() => focusPane("trees")}
             onMenu={(x, y) => openMenu("projects", x, y)}
             onListLayout={(node, height) => { projectList = node; setProjectListHeight(height) }}
           />
@@ -585,6 +607,7 @@ export function App() {
             query={queries().trees} project={selectedProject()}
             trees={treeEntries()} selectedIndex={treeIndex()} focusedGroup={focusedGroup()}
             collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()} shipping={shipping()}
+            drag={treeDrag}
             on={{
               focus: () => focusPane("trees"), new: () => openNewTree(),
               openPR: (url) => { void execOkAsync([process.platform === "darwin" ? "open" : "xdg-open", url], { timeoutMs: 10000 }).catch((error) => setStatus(String(error))) },
@@ -626,6 +649,25 @@ export function App() {
       <Show when={status()}>
         <box height={1} paddingLeft={1} paddingRight={1}>
           <text fg={status().match(/fail|error|not |invalid|already|no /i) ? theme.danger : theme.muted} selectable={false}>{status()}</text>
+        </box>
+      </Show>
+
+      <Show when={projectDrag.state()?.dragging}>
+        <box id="project-drag-preview" position="absolute" zIndex={20}
+          left={Math.max(0, Math.min(projectDrag.state()!.x + 2, dimensions().width - visibleProjectPaneWidth()))}
+          top={Math.max(0, Math.min(projectDrag.state()!.y + 1, dimensions().height - 1))}
+          width={visibleProjectPaneWidth() - 2} height={1} paddingLeft={1} paddingRight={1}
+          backgroundColor={theme.selectedHoverBg} overflow="hidden">
+          <text fg={theme.selectedFg} selectable={false}>{filteredProjects().find((project) => project.id === projectDrag.state()?.id)?.name ?? ""}</text>
+        </box>
+      </Show>
+      <Show when={treeDrag.state()?.dragging}>
+        <box id="tree-drag-preview" position="absolute" zIndex={20}
+          left={Math.max(0, Math.min(treeDrag.state()!.x + 2, dimensions().width - Math.min(40, treeList?.width ?? 24)))}
+          top={Math.max(0, Math.min(treeDrag.state()!.y + 1, dimensions().height - 1))}
+          width={Math.min(40, treeList?.width ?? 24)} height={1} paddingLeft={1} paddingRight={1}
+          backgroundColor={theme.selectedHoverBg} overflow="hidden">
+          <text fg={theme.selectedFg} selectable={false}>{treeEntries().flatMap((entry) => entry.kind === "tree" && entry.tree.path === treeDrag.state()?.path ? [entry.tree.displayName] : [])[0] ?? ""}</text>
         </box>
       </Show>
 

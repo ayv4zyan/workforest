@@ -5,6 +5,7 @@ import { configPath } from "./home.ts"
 import { slugify, uniqueId } from "./slug.ts"
 import { isGitRepo, repoRoot } from "./git.ts"
 import type { Config, Project } from "./types.ts"
+import { reconcileWorktreeOrder } from "./worktree-order.ts"
 
 const emptyConfig = (): Config => ({ version: 1, projects: [] })
 
@@ -19,7 +20,10 @@ function isConfig(value: unknown): value is Config {
     typeof project.name === "string" && project.name.length > 0 &&
     typeof project.path === "string" && project.path.length > 0 &&
     Number.isInteger(project.basePort) &&
-    (project.startCommand === undefined || typeof project.startCommand === "string"))) return false
+    (project.startCommand === undefined || typeof project.startCommand === "string") &&
+    (project.worktreeOrder === undefined || (Array.isArray(project.worktreeOrder) &&
+      project.worktreeOrder.every((path: unknown) => typeof path === "string" && path.length > 0) &&
+      new Set(project.worktreeOrder).size === project.worktreeOrder.length)))) return false
   if (value.ui !== undefined && (!isRecord(value.ui) ||
     (value.ui.projectPaneWidth !== undefined &&
       (typeof value.ui.projectPaneWidth !== "number" || !Number.isFinite(value.ui.projectPaneWidth))) ||
@@ -83,6 +87,20 @@ export function setSelectedProjectId(home: string, projectId: string): void {
   saveConfig(home, config)
 }
 
+export function moveProject(home: string, projectId: string, targetId: string, placement: "before" | "after"): Project[] {
+  const config = loadConfig(home)
+  const project = config.projects.find((row) => row.id === projectId)
+  if (!project) throw new Error(`Unknown project "${projectId}"`)
+  if (!config.projects.some((row) => row.id === targetId)) throw new Error(`Unknown project "${targetId}"`)
+  if (projectId === targetId) return config.projects
+  const next = config.projects.filter((row) => row.id !== projectId)
+  const targetIndex = next.findIndex((row) => row.id === targetId)
+  next.splice(targetIndex + (placement === "after" ? 1 : 0), 0, project)
+  if (next.every((row, index) => row.id === config.projects[index]?.id)) return config.projects
+  saveConfig(home, { ...config, projects: next })
+  return next
+}
+
 export function setWorktreePinned(home: string, path: string, pinned: boolean, isMain = false): {
   pinnedWorktreePaths: string[]
   unpinnedMainWorktreePaths: string[]
@@ -104,12 +122,48 @@ export function setWorktreePinned(home: string, path: string, pinned: boolean, i
   return { pinnedWorktreePaths: next, unpinnedMainWorktreePaths: nextUnpinnedMain }
 }
 
-export function movePinnedWorktree(home: string, oldPath: string, newPath: string): void {
+export function syncWorktreeOrder(home: string, projectId: string, paths: string[]): string[] {
+  const config = loadConfig(home)
+  const project = config.projects.find((row) => row.id === projectId)
+  if (!project) throw new Error(`Unknown project "${projectId}"`)
+  const next = reconcileWorktreeOrder(project.worktreeOrder ?? [], paths)
+  if (project.worktreeOrder && next.length === project.worktreeOrder.length &&
+    next.every((path, index) => path === project.worktreeOrder![index])) return next
+  project.worktreeOrder = next
+  saveConfig(home, config)
+  return next
+}
+
+export function moveWorktreeInOrder(home: string, projectId: string, path: string, targetPath: string, placement: "before" | "after"): string[] {
+  const config = loadConfig(home)
+  const project = config.projects.find((row) => row.id === projectId)
+  if (!project) throw new Error(`Unknown project "${projectId}"`)
+  const order = project.worktreeOrder ?? []
+  if (!order.includes(path) || !order.includes(targetPath)) throw new Error("Unknown worktree in saved order")
+  if (path === targetPath) return order
+  const next = order.filter((entry) => entry !== path)
+  next.splice(next.indexOf(targetPath) + (placement === "after" ? 1 : 0), 0, path)
+  if (next.every((entry, index) => entry === order[index])) return order
+  project.worktreeOrder = next
+  saveConfig(home, config)
+  return next
+}
+
+export function moveWorktreePreferences(home: string, oldPath: string, newPath: string): void {
   if (oldPath === newPath) return
   const config = loadConfig(home)
   const paths = config.ui?.pinnedWorktreePaths ?? []
-  if (!paths.includes(oldPath)) return
-  config.ui = { ...config.ui, pinnedWorktreePaths: [...new Set(paths.map((path) => path === oldPath ? newPath : path))] }
+  const unpinned = config.ui?.unpinnedMainWorktreePaths ?? []
+  if (!paths.includes(oldPath) && !unpinned.includes(oldPath) &&
+    !config.projects.some((project) => project.worktreeOrder?.includes(oldPath))) return
+  const replace = (entries: string[]) => [...new Set(entries.map((path) => path === oldPath ? newPath : path))]
+  if (config.ui) config.ui = { ...config.ui,
+    ...(config.ui.pinnedWorktreePaths ? { pinnedWorktreePaths: replace(paths) } : {}),
+    ...(config.ui.unpinnedMainWorktreePaths ? { unpinnedMainWorktreePaths: replace(unpinned) } : {}),
+  }
+  for (const project of config.projects) {
+    if (project.worktreeOrder?.includes(oldPath)) project.worktreeOrder = replace(project.worktreeOrder)
+  }
   saveConfig(home, config)
 }
 

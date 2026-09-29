@@ -52,6 +52,10 @@ If dependency setup fails, the new worktree stays available. Select it and use
 
 Two panes: **projects** and **worktrees**. Mouse-first (click, double-click to activate, wheel, right-click / **⋯** menus). Keyboard still works.
 
+Drag a project row to change its order. A floating copy follows the pointer, and an insertion line shows where it will land. Hold at the list's top or bottom edge, or use the wheel while dragging, to scroll. Release outside the list or press **Esc** to cancel. Project order is saved across restarts.
+
+Pinned worktrees support the same drag interaction within their group. Each project saves one shared worktree order: Pinned, Running, and Not running display their matching worktrees in that order, so starting, stopping, pinning, and unpinning preserve relative positions. New worktrees append to the order; folder renames keep their position. Drops outside Pinned cancel the reorder.
+
 ## Keys
 
 | Key | Action |

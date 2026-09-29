@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { BoxRenderable, MouseEvent } from "@opentui/core"
 import type { PullRequest } from "../lib/branch-metadata.ts"
@@ -9,6 +9,8 @@ import type { Project, ServerRow } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
 import type { TreeEntry, TreeGroup, TreeRow } from "./workspace.ts"
+import { projectListOffset } from "./project-drag.ts"
+import { treeEntryKey, treeVisibleCount, type TreeDrag } from "./tree-drag.ts"
 
 type Props = {
   focus: { selected: boolean; row: "header" | "panes" | "pane-actions" }
@@ -23,6 +25,7 @@ type Props = {
   servers: ServerRow[]
   pullingPath: string | null
   shipping: { path: string; text: string } | null
+  drag: TreeDrag
   on: {
     openPR: (url: string) => void
     prMenu: (tree: TreeRow, pr: PullRequest, x: number, y: number) => void
@@ -36,20 +39,18 @@ type Props = {
   }
 }
 
-function visibleRows<T>(rows: T[], selected: number, height: number) {
-  const count = Math.max(1, height)
-  const offset = Math.max(0, Math.min(selected - Math.floor(count / 2), rows.length - count))
-  return rows.slice(offset, offset + count).map((row, index) => ({ row, index: offset + index }))
-}
-
 const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 export function TreePane(props: Props) {
   const renderer = useRenderer()
   const [listHeight, setListHeight] = createSignal(0)
-  const [hoveredIndex, setHoveredIndex] = createSignal<number | null>(null)
+  const [hoveredKey, setHoveredKey] = createSignal<string | null>(null)
   const [spinnerFrame, setSpinnerFrame] = createSignal(0)
   const treeCount = () => props.trees.reduce((count, entry) => count + (entry.kind === "group" ? entry.count : 0), 0)
+  const keys = createMemo(() => props.trees.map(treeEntryKey))
+  const dragging = () => Boolean(props.drag.state()?.dragging)
+  const offset = () => props.drag.state()?.offset ?? projectListOffset(props.selectedIndex, props.trees.length, treeVisibleCount(listHeight(), false))
+  const visible = (index: number) => index >= offset() && index < offset() + treeVisibleCount(listHeight(), dragging())
 
   createEffect(() => {
     if (!props.pullingPath && !props.shipping) return
@@ -66,7 +67,11 @@ export function TreePane(props: Props) {
     if (props.blocked) return
     const direction = event.scroll?.direction
     const delta = direction === "down" || direction === "right" ? 1 : direction === "up" || direction === "left" ? -1 : 0
-    if (delta) props.on.pickEntry(nextIndex(props.selectedIndex, props.trees.length, delta))
+    if (delta) {
+      if (props.drag.scroll(delta)) return
+      props.drag.cancel()
+      props.on.pickEntry(nextIndex(props.selectedIndex, props.trees.length, delta))
+    }
   }
 
   return <box
@@ -91,58 +96,78 @@ export function TreePane(props: Props) {
           node.onSizeChange = () => props.on.listLayout(node, node.height)
           props.on.listLayout(node, node.height)
         }} flexGrow={1} flexDirection="column" overflow="hidden" onMouseScroll={wheel}>
-          <For each={visibleRows(props.trees, props.selectedIndex, listHeight() - 1)}>{({ row: entry, index }) => {
-            if (entry.kind === "group") return <box
-              id={`tree-group-${entry.group}`} height={1} flexShrink={0}
-              backgroundColor={props.focusedGroup === entry.group ? theme.selectedBg : theme.panel}
-              onMouseOver={() => renderer.setMousePointer("pointer")}
-              onMouseOut={() => renderer.setMousePointer("default")}
-              onMouseDown={(event) => {
-                event.stopPropagation()
-                if (props.blocked || event.button !== 0) return
-                props.on.focus()
-                props.on.toggleGroup(entry.group)
-              }}
-            ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${props.collapsedGroups[entry.group] ? "▸" : "▾"} ${{ pinned: "Pinned", running: "Running", stopped: "Not running" }[entry.group]} (${entry.count})`}</text></box>
-            const tree = entry.tree
-            const selected = () => index === props.selectedIndex
-            const name = () => {
-              const [indicator, ...statusParts] = serverStatus(serversForWorktree(props.servers, tree.path)).split(" ")
-              const status = statusParts.join(" ")
-              const pulling = props.shipping?.path === tree.path
-                ? ` ${spinnerFrames[spinnerFrame()]} ${props.shipping.text}`
-                : props.pullingPath === tree.path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
-              return `${indicator} ${tree.displayName}${tree.isMain ? "  (main)" : ""}${pulling}${tree.dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
+          <For each={keys()}>{(key, index) => {
+            if (key.startsWith("group:")) {
+              const group = key.slice(6) as TreeGroup
+              const count = () => {
+                const entry = props.trees.find((row) => row.kind === "group" && row.group === group)
+                return entry?.kind === "group" ? entry.count : 0
+              }
+              return <box
+                id={`tree-group-${group}`} height={1} flexShrink={0} visible={visible(index())}
+                backgroundColor={props.focusedGroup === group ? theme.selectedBg : theme.panel}
+                onMouseOver={() => renderer.setMousePointer(dragging() ? "move" : "pointer")}
+                onMouseOut={() => renderer.setMousePointer(dragging() ? "move" : "default")}
+                onMouseDown={(event) => {
+                  event.stopPropagation()
+                  if (props.blocked || event.button !== 0) return
+                  props.drag.cancel()
+                  props.on.focus()
+                  props.on.toggleGroup(group)
+                }}
+              ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${props.collapsedGroups[group] ? "▸" : "▾"} ${{ pinned: "Pinned", running: "Running", stopped: "Not running" }[group]} (${count()})`}</text></box>
             }
-            const rowBg = () => selected()
-              ? hoveredIndex() === index ? theme.selectedHoverBg : theme.selectedBg
-              : hoveredIndex() === index ? theme.hoverBg : theme.panel
-            return <box height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
+            const entry = () => props.trees.find((row) => row.kind === "tree" && row.tree.path === key) as Extract<TreeEntry, { kind: "tree" }>
+            const tree = () => entry().tree
+            const selected = () => index() === props.selectedIndex
+            const lifted = () => dragging() && props.drag.state()?.path === key
+            const drop = () => props.drag.state()?.target?.path === key ? props.drag.state()?.target : null
+            const name = () => {
+              const [indicator, ...statusParts] = serverStatus(serversForWorktree(props.servers, tree().path)).split(" ")
+              const status = statusParts.join(" ")
+              const pulling = props.shipping?.path === tree().path
+                ? ` ${spinnerFrames[spinnerFrame()]} ${props.shipping.text}`
+                : props.pullingPath === tree().path ? ` ${spinnerFrames[spinnerFrame()]} pulling` : ""
+              return `${indicator} ${tree().displayName}${tree().isMain ? "  (main)" : ""}${pulling}${tree().dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
+            }
+            const rowBg = () => lifted() ? theme.panel : selected()
+              ? hoveredKey() === key ? theme.selectedHoverBg : theme.selectedBg
+              : hoveredKey() === key ? theme.hoverBg : theme.panel
+            return <box id={`tree-row-${key}`} height={selected() ? 2 : 1} flexShrink={0} flexDirection="column" overflow="hidden"
+              visible={visible(index())} marginTop={drop()?.placement === "before" ? 1 : 0} marginBottom={drop()?.placement === "after" ? 1 : 0}
               backgroundColor={rowBg()}
-              onMouseOver={() => { setHoveredIndex(index); renderer.setMousePointer("pointer") }}
-              onMouseOut={() => { setHoveredIndex(null); renderer.setMousePointer("default") }}
+              onMouseOver={() => { setHoveredKey(key); renderer.setMousePointer(dragging() ? "move" : "pointer") }}
+              onMouseOut={() => { setHoveredKey(null); renderer.setMousePointer(dragging() ? "move" : "default") }}
               onMouseDown={(event) => {
                 event.stopPropagation()
                 if (props.blocked || (event.button !== 0 && event.button !== 2)) return
                 props.on.focus()
-                props.on.pickTree(tree.path)
-                if (event.button === 2) props.on.menu(event.x, event.y)
+                if (event.button === 0 && entry().group === "pinned" && !props.busy) props.drag.start(key, event)
+                else {
+                  props.drag.cancel()
+                  props.on.pickTree(key)
+                  if (event.button === 2) props.on.menu(event.x, event.y)
+                }
               }}
             >
               <box height={1} flexDirection="row" minWidth={0}>
-                <text flexShrink={1} minWidth={0} height={1} wrapMode="none" truncate overflow="hidden" fg={selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
-                <Show when={tree.pr}>{(pr: () => PullRequest) =>
+                <text flexShrink={1} minWidth={0} height={1} wrapMode="none" truncate overflow="hidden" fg={lifted() ? theme.muted : selected() ? theme.selectedFg : theme.text} selectable={false}>{`${selected() ? "▶" : " "} ${name()}`}</text>
+                <Show when={tree().pr}>{(pr: () => PullRequest) =>
                   <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact underlined backgroundColor={rowBg()}
-                    variant={tree.prState === "OPEN" ? "danger" : tree.prState === "MERGED" ? "accent" : "default"}
+                    variant={tree().prState === "OPEN" ? "danger" : tree().prState === "MERGED" ? "accent" : "default"}
                     disabled={props.blocked} onPress={() => props.on.openPR(pr().url)}
-                    onContextMenu={(x, y) => props.on.prMenu(tree, pr(), x, y)} />
+                    onContextMenu={(x, y) => props.on.prMenu(tree(), pr(), x, y)} />
                 }</Show>
               </box>
               <Show when={selected()}>
-                <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={theme.selectedFg} selectable={false}>{`   ${tree.isMain ? `${tree.branch ?? "detached"}  ` : !tree.branch ? "detached  " : ""}${displayPath(tree.path)}`}</text>
+                <text width="100%" height={1} wrapMode="none" truncate overflow="hidden" fg={lifted() ? theme.muted : theme.selectedFg} selectable={false}>{`   ${tree().isMain ? `${tree().branch ?? "detached"}  ` : !tree().branch ? "detached  " : ""}${displayPath(tree().path)}`}</text>
               </Show>
             </box>
           }}</For>
+          <Show when={dragging() && props.drag.state()?.target}>
+            <box id="tree-drop-indicator" position="absolute" left={0} top={props.drag.lineTop()}
+              width="100%" height={1} border={["top"]} borderColor={theme.accent} backgroundColor={theme.panel} zIndex={1} />
+          </Show>
         </box>
       </box>
     </Show>

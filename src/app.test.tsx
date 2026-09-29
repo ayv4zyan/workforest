@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
 import { BoxRenderable, RGBA, TextAttributes, TextRenderable, type Renderable } from "@opentui/core"
-import { addProject, loadConfig, setProjectStartCommand } from "./lib/config.ts"
+import { addProject, loadConfig, saveConfig, setProjectStartCommand, setWorktreePinned } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
 import { collectServers, startServer, stopServer, loadRunRecords } from "./lib/servers.ts"
 import { rememberPort } from "./lib/ports.ts"
@@ -39,6 +39,334 @@ async function paint(setup: { renderOnce: () => Promise<void> }) {
   await Bun.sleep(firstPaint ? 200 : 20)
   await setup.renderOnce()
 }
+
+test.serial("pinned worktrees drag in place and keep their shared order through server transitions and restart", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-tree-drag-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home"), repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = setProjectStartCommand(home, addProject(home, repo).id, "bun server.ts")
+  const [alpha, beta, gamma] = ["alpha-work", "beta-hidden", "gamma-work"].map((name) => {
+    const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name })
+    writeFileSync(join(tree.path, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") })')
+    setWorktreePinned(home, tree.path, true)
+    return tree
+  }) as [ReturnType<typeof createWorktree>, ReturnType<typeof createWorktree>, ReturnType<typeof createWorktree>]
+  writeFileSync(join(gamma.path, "draft.txt"), "keep this draft")
+  const originalTrees = listWorktrees(repo)
+  const records: ReturnType<typeof startServer>[] = []
+  const stop = (record: ReturnType<typeof startServer>) => stopServer(home, { ...record, command: record.command.join(" "), owned: true })
+  let setup = await testRender(() => <App />, { width: 110, height: 24 })
+  const row = (path: string) => findById(setup.renderer.root, `tree-row-${path}`)!
+  const order = () => loadConfig(home).projects[0]!.worktreeOrder!
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    await setup.mockMouse.click(node.x + 1, node.y)
+    await paint(setup)
+  }
+  const waitFor = async (text: string) => {
+    for (let i = 0; i < 80 && !setup.captureCharFrame().includes(text); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain(text)
+  }
+  try {
+    await waitFor("Pinned (4)")
+    await setup.mockMouse.pressDown(row(gamma.path).x + 3, row(gamma.path).y)
+    await paint(setup)
+    await setup.mockMouse.moveTo(row(alpha.path).x + 3, row(alpha.path).y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "tree-drop-indicator")!.y).toBe(row(alpha.path).y - 1)
+    expect(findById(setup.renderer.root, "tree-drag-preview")).toBeTruthy()
+    await setup.mockMouse.release(row(alpha.path).x + 3, row(alpha.path).y - 1)
+    await paint(setup)
+    const ranked = [gamma.path, alpha.path, beta.path, repo]
+    expect(order()).toEqual(ranked)
+    expect(row(gamma.path).y).toBeLessThan(row(alpha.path).y)
+    expect(row(gamma.path).height).toBe(2)
+    expect(findById(setup.renderer.root, "tree-drag-preview")).toBeUndefined()
+
+    // A drop on another category cancels instead of changing pins or ranks.
+    const running = findById(setup.renderer.root, "tree-group-running")!
+    await setup.mockMouse.pressDown(row(gamma.path).x + 3, row(gamma.path).y)
+    await setup.mockMouse.moveTo(running.x + 3, running.y + 2)
+    await paint(setup)
+    await setup.mockMouse.moveTo(running.x + 3, running.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "tree-drop-indicator")).toBeUndefined()
+    await setup.mockMouse.release(running.x + 3, running.y)
+    await paint(setup)
+    expect(order()).toEqual(ranked)
+    expect(loadConfig(home).ui?.pinnedWorktreePaths).toEqual([alpha.path, beta.path, gamma.path])
+    await setup.mockMouse.pressDown(row(gamma.path).x + 3, row(gamma.path).y)
+    await setup.mockMouse.moveTo(row(beta.path).x + 3, row(beta.path).y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "tree-drop-indicator")!.y).toBe(row(beta.path).y + row(beta.path).height)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    await setup.mockMouse.release(row(beta.path).x + 3, row(beta.path).y)
+    await paint(setup)
+    expect(order()).toEqual(ranked)
+
+    // Hidden worktrees retain their rank when the visible pinned subset is reordered.
+    await setup.mockInput.typeText("/work")
+    await paint(setup)
+    expect(row(beta.path)).toBeUndefined()
+    await setup.mockMouse.drag(row(gamma.path).x + 3, row(gamma.path).y, row(alpha.path).x + 3, row(alpha.path).y)
+    await paint(setup)
+    expect(order()).toEqual([alpha.path, gamma.path, beta.path, repo])
+    await setup.mockMouse.drag(row(gamma.path).x + 3, row(gamma.path).y, row(alpha.path).x + 3, row(alpha.path).y)
+    await paint(setup)
+    expect(order()).toEqual(ranked)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+
+    for (const tree of [alpha, beta, gamma]) setWorktreePinned(home, tree.path, false)
+    setWorktreePinned(home, repo, false, true)
+    await click("btn-refresh")
+    await waitFor("Not running (4)")
+    expect(row(gamma.path).y).toBeLessThan(row(alpha.path).y)
+    expect(row(alpha.path).y).toBeLessThan(row(beta.path).y)
+    // Non-pinned rows retain ordinary selection behavior and cannot be reordered yet.
+    await setup.mockMouse.drag(row(beta.path).x + 3, row(beta.path).y, row(gamma.path).x + 3, row(gamma.path).y)
+    await paint(setup)
+    expect(order()).toEqual(ranked)
+    expect(findById(setup.renderer.root, "tree-drag-preview")).toBeUndefined()
+
+    const probes = [Bun.serve({ port: 0, fetch: () => new Response("probe") }), Bun.serve({ port: 0, fetch: () => new Response("probe") })]
+    const ports = probes.map((probe) => probe.port!)
+    probes.forEach((probe) => probe.stop(true))
+    const start = (tree: typeof gamma, port: number, usedPorts: number[]) => {
+      const record = startServer({ home, project, worktree: tree, port, usedPorts })
+      records.push(record)
+      return record
+    }
+    const gammaServer = start(gamma, ports[0]!, [])
+    start(beta, ports[1]!, [ports[0]!])
+    await click("btn-refresh")
+    await waitFor("Running (2)")
+    expect(row(gamma.path).y).toBeLessThan(row(beta.path).y)
+    await stop(gammaServer)
+    await click("btn-refresh")
+    await waitFor("Not running (3)")
+    expect(row(gamma.path).y).toBeLessThan(row(alpha.path).y)
+    expect(order()).toEqual(ranked)
+    start(gamma, ports[0]!, [ports[1]!])
+    await click("btn-refresh")
+    await waitFor("Running (2)")
+    expect(row(gamma.path).y).toBeLessThan(row(beta.path).y)
+    setWorktreePinned(home, gamma.path, true)
+    setWorktreePinned(home, alpha.path, true)
+    await click("btn-refresh")
+    await waitFor("Pinned (2)")
+    expect(row(gamma.path).y).toBeLessThan(row(alpha.path).y)
+    expect(order()).toEqual(ranked)
+    expect(listWorktrees(repo)).toEqual(originalTrees)
+    expect(await Bun.file(join(gamma.path, "draft.txt")).text()).toBe("keep this draft")
+    setup.renderer.destroy()
+    setup = await testRender(() => <App />, { width: 110, height: 24 })
+    await waitFor("Pinned (2)")
+    expect(row(gamma.path).y).toBeLessThan(row(alpha.path).y)
+    expect(order()).toEqual(ranked)
+  } finally {
+    setup.renderer.destroy()
+    for (const record of records) { try { await stop(record) } catch { /* already stopped */ } }
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 15000)
+
+test.serial("pinned dragging scrolls to offscreen worktrees and survives periodic refresh", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-pinned-scroll-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home"), repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  const trees = Array.from({ length: 8 }, (_, index) => {
+    const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: `item-${index}` })
+    setWorktreePinned(home, tree.path, true)
+    return tree
+  })
+  const setup = await testRender(() => <App />, { width: 90, height: 14 })
+  try {
+    await paint(setup)
+    const source = findById(setup.renderer.root, `tree-row-${trees[7]!.path}`)!
+    expect(source.visible).toBe(true)
+    const pane = findById(setup.renderer.root, "pane-trees")!
+    const top = pane.y + 2
+    await setup.mockMouse.pressDown(source.x + 3, source.y)
+    await paint(setup)
+    await setup.mockMouse.moveTo(source.x + 3, top)
+    await paint(setup)
+    await Bun.sleep(350)
+    await paint(setup)
+    for (let i = 0; i < 10; i++) await setup.mockMouse.scroll(pane.x + 3, top, "up")
+    await paint(setup)
+    expect(source.visible).toBe(false)
+    // The app refreshes every two seconds; keyed rows must retain mouse capture.
+    await Bun.sleep(2100)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "tree-drag-preview")).toBeTruthy()
+    const target = findById(setup.renderer.root, `tree-row-${trees[0]!.path}`)!
+    expect(target.visible).toBe(true)
+    await setup.mockMouse.moveTo(target.x + 3, target.y)
+    await paint(setup)
+    const line = findById(setup.renderer.root, "tree-drop-indicator")!
+    expect(line.y).toBe(target.y - 1)
+    await setup.mockMouse.release(line.x + 3, line.y)
+    await paint(setup)
+    expect(loadConfig(home).projects[0]?.worktreeOrder).toEqual([trees[7]!.path, ...trees.slice(0, 7).map((tree) => tree.path), repo])
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 10000)
+
+test.serial("projects drag before and after rows, cancel safely, and keep their worktrees after restart", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-project-drag-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  process.env.WORKFOREST_HOME = home
+  const projects = ["alpha", "hidden", "beta", "gamma"].map((name) => {
+    const repo = join(root, name)
+    mkdirSync(repo)
+    gitOk(repo, ["init", "-b", "main"])
+    gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+    return addProject(home, repo, name === "hidden" ? "other" : `${name}-project`)
+  })
+  const tree = createWorktree({ repoPath: projects[3]!.path, home, projectId: projects[3]!.id, name: "gamma-feature" })
+  writeFileSync(join(tree.path, "draft.txt"), "keep my draft")
+  const worktrees = projects.map((project) => listWorktrees(project.path))
+  const order = () => loadConfig(home).projects.map((row) => row.id)
+  const original = projects.map((row) => row.id)
+  let setup = await testRender(() => <App />, { width: 100, height: 18 })
+  const row = (index: number) => findById(setup.renderer.root, `project-row-${projects[index]!.id}`)!
+  const assertOrder = (indices: number[]) => {
+    expect(order()).toEqual(indices.map((index) => projects[index]!.id))
+    const frame = setup.captureCharFrame()
+    const visible = indices.filter((index) => findById(setup.renderer.root, `project-row-${projects[index]!.id}`)?.visible)
+    for (let i = 1; i < visible.length; i++) expect(findText(frame, projects[visible[i - 1]!]!.name).y).toBeLessThan(findText(frame, projects[visible[i]!]!.name).y)
+  }
+  try {
+    await paint(setup)
+    const source = row(3), target = row(0)
+    await setup.mockMouse.pressDown(source.x + 2, source.y)
+    await paint(setup)
+    await setup.mockMouse.moveTo(target.x + 2, target.y)
+    await paint(setup)
+    const before = findById(setup.renderer.root, "project-drop-indicator")!
+    const preview = findById(setup.renderer.root, "project-drag-preview")!
+    expect(before.y).toBe(target.y - 1)
+    expect(before.width).toBe(target.width)
+    expect(preview.y).toBe(before.y + 1)
+    expect(setup.captureCharFrame()).toContain("projects (4)")
+    expect(setup.captureCharFrame()).not.toContain("drop ↑")
+    expect(setup.captureCharFrame().split("\n")[before.y]).toContain("─".repeat(20))
+    expect((source.getChildren()[0] as TextRenderable).fg.equals(RGBA.fromHex(theme.muted))).toBe(true)
+    expect(order()).toEqual(original)
+    await setup.mockMouse.release(target.x + 2, target.y)
+    await paint(setup)
+    assertOrder([3, 0, 1, 2])
+    expect(findById(setup.renderer.root, "project-drop-indicator")).toBeUndefined()
+    expect(findById(setup.renderer.root, "project-drag-preview")).toBeUndefined()
+    expect(loadConfig(home).ui?.selectedProjectId).toBe(projects[3]!.id)
+    expect(findById(setup.renderer.root, "pane-projects") instanceof BoxRenderable).toBe(true)
+    expect((findById(setup.renderer.root, "pane-projects") as BoxRenderable).borderColor.equals(RGBA.fromHex(theme.borderFocus))).toBe(true)
+
+    // Clicking again still opens the project's worktree pane, but only on release.
+    await setup.mockMouse.click(row(3).x + 2, row(3).y)
+    await paint(setup)
+    expect((findById(setup.renderer.root, "pane-projects") as BoxRenderable).borderColor.equals(RGBA.fromHex(theme.border))).toBe(true)
+
+    // Drag the selected project down without activating its worktree pane.
+    await setup.mockMouse.pressDown(row(3).x + 2, row(3).y)
+    await setup.mockMouse.moveTo(row(2).x + 2, row(2).y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "project-drop-indicator")!.y).toBe(row(2).y + 1)
+    await setup.mockMouse.release(row(2).x + 2, row(2).y)
+    await paint(setup)
+    assertOrder([0, 1, 2, 3])
+    expect((findById(setup.renderer.root, "pane-projects") as BoxRenderable).borderColor.equals(RGBA.fromHex(theme.borderFocus))).toBe(true)
+
+    await setup.mockMouse.pressDown(row(3).x + 2, row(3).y)
+    await setup.mockMouse.moveTo(row(0).x + 2, row(0).y)
+    await paint(setup)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    await setup.mockMouse.release(row(0).x + 2, row(0).y)
+    await paint(setup)
+    assertOrder([0, 1, 2, 3])
+    await setup.mockMouse.drag(row(3).x + 2, row(3).y, 70, row(0).y)
+    await paint(setup)
+    assertOrder([0, 1, 2, 3])
+
+    // Filtered moves retain hidden projects and move relative to the target in the full list.
+    await setup.mockInput.typeText("/project")
+    await paint(setup)
+    expect(row(1)).toBeUndefined()
+    await setup.mockMouse.drag(row(2).x + 2, row(2).y, row(0).x + 2, row(0).y)
+    await paint(setup)
+    assertOrder([2, 0, 1, 3])
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    assertOrder([2, 0, 1, 3])
+    expect(projects.map((project) => listWorktrees(project.path))).toEqual(worktrees)
+    expect(await Bun.file(join(tree.path, "draft.txt")).text()).toBe("keep my draft")
+    expect(loadConfig(home).projects.find((project) => project.id === projects[3]!.id)).toMatchObject(projects[3]!)
+
+    setup.renderer.destroy()
+    setup = await testRender(() => <App />, { width: 100, height: 18 })
+    await paint(setup)
+    assertOrder([2, 0, 1, 3])
+    expect(loadConfig(home).ui?.selectedProjectId).toBe(projects[2]!.id)
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.serial("project dragging scrolls beyond the viewport without changing selection", async () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-project-scroll-"))
+  const oldHome = process.env.WORKFOREST_HOME
+  process.env.WORKFOREST_HOME = home
+  const projects = Array.from({ length: 14 }, (_, index) => ({ id: `project-${index}`, name: `project-${index}`, path: join(home, `repo-${index}`), basePort: 5173 }))
+  saveConfig(home, { version: 1, projects })
+  const setup = await testRender(() => <App />, { width: 90, height: 12 })
+  try {
+    await paint(setup)
+    const source = findById(setup.renderer.root, "project-row-project-0")!
+    const bottom = findById(setup.renderer.root, "project-row-project-4")!
+    expect(bottom.visible).toBe(true)
+    await setup.mockMouse.pressDown(source.x + 2, source.y)
+    await setup.mockMouse.moveTo(bottom.x + 2, bottom.y)
+    await paint(setup)
+    await Bun.sleep(350)
+    await paint(setup)
+    expect(source.visible).toBe(false)
+    // Wheel scrolling while dragging moves the viewport, not the selected project.
+    for (let i = 0; i < 14; i++) await setup.mockMouse.scroll(source.x + 2, bottom.y, "down")
+    await paint(setup)
+    const last = findById(setup.renderer.root, "project-row-project-13")!
+    expect(last.visible).toBe(true)
+    const indicator = findById(setup.renderer.root, "project-drop-indicator")!
+    expect(indicator.y).toBe(last.y + 1)
+    expect(indicator.y).toBeLessThan(findById(setup.renderer.root, "pane-projects")!.y + findById(setup.renderer.root, "pane-projects")!.height - 1)
+    expect(loadConfig(home).ui?.selectedProjectId).toBe("project-0")
+    await setup.mockMouse.release(last.x + 2, last.y)
+    await paint(setup)
+    expect(loadConfig(home).projects.map((row) => row.id)).toEqual([...projects.slice(1).map((row) => row.id), "project-0"])
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(home, { recursive: true, force: true })
+  }
+})
 
 test.serial("worktree details follow selection and long rows fit the pane after resizing", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-tree-layout-")))
@@ -716,8 +1044,10 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port} · external`)
     await click("btn-start")
-    expect(setup.captureCharFrame()).toContain("External processes were started")
-    expect(setup.captureCharFrame()).toContain("outside Workforest.")
+    // PID length changes where the caption wraps between terminal rows.
+    const stopFrame = setup.captureCharFrame().replaceAll("│", " ").replace(/\s+/g, " ")
+    expect(stopFrame).toContain("External processes were started")
+    expect(stopFrame).toContain("outside Workforest.")
     await click("btn-cancel")
     expect(external.exitCode).toBeNull()
     await click("btn-start")

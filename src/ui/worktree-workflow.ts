@@ -5,7 +5,7 @@ import { loadAutoRename } from "../lib/auto-rename-settings.ts"
 import { setupWorktreeDepsAsync } from "../lib/deps.ts"
 import { displayPath } from "../lib/display-path.ts"
 import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, pullWorktree, removeWorktreeAsync, renameWorktree, worktreeDisplayName } from "../lib/git.ts"
-import { movePinnedWorktree, setWorktreePinned } from "../lib/config.ts"
+import { moveWorktreePreferences, setWorktreePinned } from "../lib/config.ts"
 import { movePort } from "../lib/ports.ts"
 import { forgetWorktreeRuntime, moveRunRecord, serversForWorktree, stopServer } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
@@ -203,7 +203,7 @@ export function createWorktreeWorkflow(options: {
       if (renamed.path !== tree.path) {
         moveRunRecord(options.home(), project.id, tree.path, renamed.path)
         movePort(options.home(), tree.path, renamed.path)
-        movePinnedWorktree(options.home(), tree.path, renamed.path)
+        moveWorktreePreferences(options.home(), tree.path, renamed.path)
       }
       workspace.setSelectedTreePath(renamed.path)
       dialog.setModal(null)
