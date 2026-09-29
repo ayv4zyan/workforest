@@ -92,8 +92,23 @@ export async function loadPullRequestState(cwd: string, pr: PullRequest): Promis
 export async function mergePullRequest(cwd: string, pr: PullRequest): Promise<PullRequestState | null> {
   const state = await loadPullRequestState(cwd, pr)
   if (state !== "OPEN") throw new Error(state ? `PR #${pr.number} is ${state.toLowerCase()}` : `Could not verify PR #${pr.number} is open`)
-  await execOkAsync(["gh", "pr", "merge", pr.url, "--merge"], {
-    cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, timeoutMs: 5 * 60 * 1000,
-  })
+  const opts = { cwd, env: { ...process.env, GH_PROMPT_DISABLED: "1" }, timeoutMs: 5 * 60 * 1000 }
+  const result = await execAsync(["gh", "pr", "merge", pr.url, "--merge"], opts)
+  if (result.timedOut) throw new Error(`gh pr merge timed out after ${opts.timeoutMs}ms`)
+  if (result.exitCode !== 0) {
+    const detail = result.stderr.trim() || result.stdout.trim() || "gh pr merge failed"
+    // gh refuses a blocked PR before GitHub can apply the caller's ruleset bypass.
+    // Let the merge API decide whether this user is allowed to bypass the rule.
+    if (!/is not mergeable: (the base branch policy prohibits the merge|the head branch is not up to date with the base branch)\./.test(detail)) {
+      throw new Error(detail)
+    }
+    const url = new URL(pr.url)
+    const match = /^\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(url.pathname)
+    if (!match || Number(match[3]) !== pr.number) throw new Error("Invalid pull request link")
+    await execOkAsync([
+      "gh", "api", `repos/${match[1]}/${match[2]}/pulls/${pr.number}/merge`,
+      "--hostname", url.hostname, "--method", "PUT", "-f", "merge_method=merge",
+    ], opts)
+  }
   return loadPullRequestState(cwd, pr)
 }
