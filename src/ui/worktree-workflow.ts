@@ -93,7 +93,7 @@ export function createWorktreeWorkflow(options: {
 
   function toggleSourceMenu() {
     const current = dialog.modal()
-    if (current?.kind !== "new-tree") return
+    if (current?.kind !== "new-tree" && current?.kind !== "ship") return
     const branchOpen = !current.branchOpen
     if (branchOpen) dialog.setHighlight(Math.max(0, current.branches.indexOf(current.source)))
     dialog.setModal({ ...current, branchOpen })
@@ -101,7 +101,7 @@ export function createWorktreeWorkflow(options: {
   }
 
   function pickSource(name: string) {
-    dialog.setModal((current) => current?.kind === "new-tree" ? { ...current, source: name, branchOpen: false, error: undefined } : current)
+    dialog.setModal((current) => (current?.kind === "new-tree" || current?.kind === "ship") ? { ...current, source: name, branchOpen: false, error: undefined } : current)
     dialog.setModalFocus("source")
   }
 

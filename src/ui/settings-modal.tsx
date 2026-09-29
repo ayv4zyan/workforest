@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from "solid-js"
+import { For, Show, createSignal, createEffect, on } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { theme } from "../theme.ts"
@@ -10,13 +10,13 @@ import {
   type AutoRenameSettings,
 } from "../lib/auto-rename-settings.ts"
 
-export type SettingsFocus = "provider" | "model" | "reasoning" | "prompt" | "save" | "retry" | "cancel"
+export type SettingsFocus = "section" | "provider" | "model" | "reasoning" | "prompt" | "save" | "retry" | "cancel"
 export type SettingsField = "provider" | "model" | "reasoning"
 
-const fieldOrder: SettingsFocus[] = ["provider", "model", "reasoning", "prompt", "save", "cancel"]
+const fieldOrder: SettingsFocus[] = ["section", "provider", "model", "reasoning", "prompt", "save", "cancel"]
 
 export function settingsFocusOrder(hasError: boolean): SettingsFocus[] {
-  return hasError ? ["provider", "model", "reasoning", "prompt", "retry", "save", "cancel"] : fieldOrder
+  return hasError ? ["section", "provider", "model", "reasoning", "prompt", "retry", "save", "cancel"] : fieldOrder
 }
 
 function choices(field: SettingsField, draft: AutoRenameSettings): { value: string; label: string }[] {
@@ -33,6 +33,8 @@ function fieldValue(field: SettingsField, draft: AutoRenameSettings): string {
 
 export function SettingsForm(props: {
   draft: AutoRenameSettings
+  section: "autoRename" | "ship"
+  onSection: (section: "autoRename" | "ship") => void
   error?: string
   focus: SettingsFocus
   open: SettingsField | null
@@ -50,6 +52,10 @@ export function SettingsForm(props: {
   const [count, setCount] = createSignal(props.draft.prompt.length)
   const over = () => count() > promptSoftLimit
   let promptArea: TextareaRenderable | undefined
+  createEffect(on(() => props.section, () => {
+    promptArea?.setText(props.draft.prompt)
+    setCount(props.draft.prompt.length)
+  }))
   let clickClaimed = false
 
   function claimClick() {
@@ -162,9 +168,10 @@ export function SettingsForm(props: {
   return (
     <box flexGrow={1} flexDirection="row" gap={1} onMouseDown={() => { if (!clickClaimed && props.open) props.onDismiss() }}>
       <box width={16} flexShrink={0} border borderColor={theme.border} backgroundColor={theme.panel} flexDirection="column">
-        <box height={1} paddingLeft={1} backgroundColor={theme.selectedBg}>
-          <text fg={theme.selectedFg} selectable={false}>Auto rename</text>
-        </box>
+        <ActionButton id="settings-section-autoRename" label="Auto rename" compact align="left"
+          active={props.section === "autoRename"} onPress={() => props.onSection("autoRename")} />
+        <ActionButton id="settings-section-ship" label="Ship" compact align="left"
+          active={props.section === "ship"} onPress={() => props.onSection("ship")} />
       </box>
       <box flexGrow={1} flexDirection="column" gap={0} paddingLeft={1}>
         <box flexGrow={1} flexDirection="column" gap={0}>

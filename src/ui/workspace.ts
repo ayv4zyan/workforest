@@ -1,11 +1,12 @@
 import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js"
+import { loadPullRequest, loadPullRequestState, savePullRequestState, type PullRequest, type PullRequestState } from "../lib/branch-metadata.ts"
 import { loadConfig, setSelectedProjectId as saveSelectedProjectId } from "../lib/config.ts"
 import { isDirtyAsync, listWorktreesAsync, worktreeDisplayName } from "../lib/git.ts"
 import { collectServersAsync, serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
 
 export type Pane = "projects" | "trees"
-export type TreeRow = GitWorktree & { dirty: boolean; displayName: string }
+export type TreeRow = GitWorktree & { dirty: boolean; displayName: string; pr?: PullRequest | null; prState?: PullRequestState | null }
 export type TreeGroup = "running" | "stopped"
 export type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 
@@ -111,7 +112,28 @@ export function createWorkspace(options: {
   let refreshGeneration = 0
   let refreshPending = false
   let displayedProjectId: string | null = null
-  onCleanup(() => { refreshGeneration++ })
+  let disposed = false
+  const prStates = new Map<string, { state: PullRequestState | null; checkedAt: number }>()
+  const prStateRequests = new Set<string>()
+  onCleanup(() => { refreshGeneration++; disposed = true })
+
+  function refreshPrStates(rows: TreeRow[], periodic: boolean) {
+    for (const row of rows) {
+      const pr = row.pr
+      if (!pr || prStateRequests.has(pr.url)) continue
+      const cached = prStates.get(pr.url)
+      if (periodic && cached && Date.now() - cached.checkedAt < 60_000) continue
+      prStateRequests.add(pr.url)
+      void loadPullRequestState(row.path, pr).then((state) => {
+        const currentState = state ?? prStates.get(pr.url)?.state ?? null
+        prStates.set(pr.url, { state: currentState, checkedAt: Date.now() })
+        if (state && row.branch) {
+          try { savePullRequestState(row.path, row.branch, pr, state) } catch { /* Keep the live state in memory. */ }
+        }
+        if (!disposed) setTrees((current) => current.map((tree) => tree.pr?.url === pr.url ? { ...tree, prState: currentState } : tree))
+      }).finally(() => prStateRequests.delete(pr.url))
+    }
+  }
 
   async function refresh(periodic = false) {
     if (periodic && refreshPending) return
@@ -132,14 +154,22 @@ export function createWorkspace(options: {
       })
       const selectedIndex = config.projects.findIndex((project) => project.id === currentId)
       const selectedTrees = selectedIndex < 0 ? [] : (await entriesPending[selectedIndex])?.[1] ?? []
-      const listed = await Promise.all(selectedTrees.map(async (tree) => ({
+      const listed: TreeRow[] = await Promise.all(selectedTrees.map(async (tree) => ({
         ...tree,
         dirty: await isDirtyAsync(tree.path),
+        pr: await loadPullRequest(tree.path, tree.branch),
         displayName: worktreeDisplayName(tree),
       })))
+      for (const row of listed) {
+        if (!row.pr) { row.prState = null; continue }
+        const cached = prStates.get(row.pr.url)
+        if (!cached && row.pr.state) prStates.set(row.pr.url, { state: row.pr.state, checkedAt: 0 })
+        row.prState = cached?.state ?? row.pr.state ?? null
+      }
       if (generation !== refreshGeneration || selectedProjectId() !== currentId) return
       displayedProjectId = currentId
       setTrees(listed)
+      refreshPrStates(listed, periodic)
       setSelectedTreePath(listed.some((tree) => tree.path === selectedTreePath())
         ? selectedTreePath() : (listed[0]?.path ?? null))
       const treesByProject = new Map<string, GitWorktree[]>(await Promise.all(entriesPending))

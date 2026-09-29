@@ -45,6 +45,7 @@ Override the data dir with `WORKFOREST_HOME` (default `~/.workforest`).
 | Search | `/` or bottom **search** — filter the focused pane by displayed name |
 | Logs / stop | Header **logs** and **■**; stop confirms before killing external PIDs |
 | Rename | Branch by default; optional folder move; or **auto** via Codex |
+| Pull / ship | Worktree menu → **Git** → **Pull** or **Ship** |
 
 If dependency setup fails, the new worktree stays available. Select it and use
 **Set up dependencies** in its row menu to retry.
@@ -95,6 +96,38 @@ the initial model is `gpt-6-luna`. Suggests `agent/…` names from the branch di
 untracked contents excluded). Review, edit, submit — renames the branch by
 default, with an optional folder move. Esc cancels generation. Main and
 detached trees are skipped. 2-minute timeout.
+
+## Ship (optional)
+
+Worktree menu → **Git** → **Ship**. Choose the PR target, then click **Ship** to
+commit all non-ignored changes, push, and create a ready-for-review GitHub PR.
+Requires authenticated `codex` and `gh` CLIs (`codex login`, `gh auth login`).
+An existing open PR for the branch in the push repository is reused without
+regenerating its description; if its target differs, choose that target before
+shipping again. Same-named branches in other forks are ignored.
+
+Ship stops before automatically committing uncommitted `.env` or `.env.*` files,
+including those in subdirectories. Review these files manually and ignore local
+secrets before shipping. Ignored, untracked environment files stay local.
+
+Your changes are committed first. If a pre-push hook fails, Codex investigates
+and fixes the failure; each repair is committed separately before another push.
+Workforest allows three repair attempts and never uses hook bypass flags or force
+push. Remote/authentication failures stop without invoking repairs. A failing
+initial commit hook stops before AI edits, preserving the separation of user work.
+Cancel with **cancel ship**; completed commits and remaining edits stay on disk.
+Git commands time out after 10 minutes; each AI phase after 15 minutes.
+
+The spinner beside the worktree displays AI-written progress. On completion,
+click **#450** beside the name to open its PR. The link survives app restarts and
+branch/folder renames. Settings → **Ship** has its own provider, model, reasoning,
+and prompt, independent of Auto rename (initial model: `gpt-6-sol`, high reasoning).
+
+Workforest records the original source in local Git config as
+`branch.<name>.workforest-source`. Missing data falls back to the branch creation
+reflog, then a unique closest ancestor suggestion (marked inferred). Ambiguous
+history leaves the target unselected. Changing the PR target never overwrites the
+original source. PR links use `branch.<name>.workforest-pr`; both values stay local.
 
 ## Layout on disk
 

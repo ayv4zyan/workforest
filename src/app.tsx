@@ -8,6 +8,8 @@ import { handleModalKey } from "./ui/modal-keyboard.ts"
 import { navigationKey, type NavigationAction } from "./ui/navigation-keyboard.ts"
 import { createServerWorkflow } from "./ui/server-workflow.ts"
 import { createProjectWorkflow } from "./ui/project-workflow.ts"
+import { createShipWorkflow } from "./ui/ship-workflow.ts"
+import { execOkAsync } from "./lib/exec.ts"
 import { createWorktreeWorkflow } from "./ui/worktree-workflow.ts"
 import { ProjectPane } from "./ui/project-pane.tsx"
 import { TreePane } from "./ui/tree-pane.tsx"
@@ -18,6 +20,7 @@ import { createSettingsWorkflow } from "./ui/settings-workflow.ts"
 import { createPathWorkflow } from "./ui/path-workflow.ts"
 import { loadConfig, setProjectPaneWidth } from "./lib/config.ts"
 import { workforestHome } from "./lib/home.ts"
+import { mergePullRequest } from "./lib/branch-metadata.ts"
 
 type FocusRow = "header" | "panes" | "pane-actions"
 type Action = MenuAction
@@ -32,7 +35,7 @@ export function App() {
   const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const {
-    menu, setMenu, open: openContextMenu, openRenameSubmenu,
+    menu, setMenu, open: openContextMenu, openSubmenu,
     handleKey: handleMenuKey, Layer: ContextMenuLayer,
   } = createContextMenu({ dimensions, actions: () => menuActions(), submenuActions: () => submenuActions() })
   const [projectListHeight, setProjectListHeight] = createSignal(0)
@@ -82,6 +85,9 @@ export function App() {
       loadTreesFor, pickTree, servers, refresh },
     dialog: { modal, setModal, setModalFocus, setHighlight: setSettingsHighlight, show: showModal },
     operation: { busy, setBusy, setStatus, run: runOp },
+  })
+  const { shipping, openShip, startShip, abortShip } = createShipWorkflow({
+    home: dataDir, mainPath: () => selectedProject()?.path ?? null, selectedTree, busy, setBusy, setStatus, modal, setModal, setModalFocus, show: showModal, refresh,
   })
   let modalInput: InputRenderable | undefined
   const pathWorkflow = createPathWorkflow({
@@ -162,6 +168,7 @@ export function App() {
 
   function quit() {
     abortRename()
+    abortShip()
     renderer.destroy()
   }
 
@@ -204,6 +211,7 @@ export function App() {
     return [
       { id: "btn-refresh", label: "↻", onPress: () => refresh() },
       ...serverActions,
+      ...(shipping() ? [{ id: "btn-cancel-ship", label: "cancel ship", onPress: abortShip }] : []),
       { id: "btn-settings", label: "⚙", onPress: openSettings },
       { id: "btn-quit", label: "✕", variant: "danger", onPress: quit },
     ]
@@ -223,6 +231,17 @@ export function App() {
   }
 
   function menuActions(): Action[] {
+    const currentMenu = menu()
+    if (currentMenu?.pane === "pr") return [
+      { id: "btn-merge-pr", label: "Merge", disabled: busy() || currentMenu.state !== "OPEN",
+        onPress: () => { void runOp(`merging PR #${currentMenu.pr.number}`, async () => {
+          const state = await mergePullRequest(currentMenu.cwd, currentMenu.pr)
+          if (state === "MERGED") return `merged PR #${currentMenu.pr.number}`
+          if (state === "OPEN") return `merge requested for PR #${currentMenu.pr.number}; waiting for GitHub checks or merge queue`
+          return `merge command completed for PR #${currentMenu.pr.number}; verify its status on GitHub`
+        }) },
+      },
+    ]
     if (menu()?.pane === "projects") {
       return [
         { id: "btn-command", label: "Edit start command", disabled: busy(), onPress: openStartCommand },
@@ -233,11 +252,11 @@ export function App() {
     const linked = Boolean(tree && !tree.isMain) && !busy()
     const running = activeServers().length > 0
     return [
-      { id: "btn-rename", label: "Rename", trailingLabel: "›", disabled: !linked, onPress: openRenameSubmenu },
+      { id: "btn-rename", label: "Rename", submenu: "rename", trailingLabel: "›", disabled: !linked, onPress: () => openSubmenu("rename") },
       running
         ? { id: "btn-menu-stop", label: "Stop", variant: "danger", disabled: !tree || busy(), onPress: toggleServer }
         : { id: "btn-menu-run", label: "Run", variant: "accent", disabled: !tree || busy(), onPress: toggleServer },
-      { id: "btn-pull", label: "Pull", disabled: !tree?.branch || busy(), onPress: pullTree },
+      { id: "btn-git", label: "Git", submenu: "git", trailingLabel: "›", disabled: !tree?.branch || busy(), onPress: () => openSubmenu("git") },
       { id: "btn-copy-path", label: "Copy path", disabled: !tree, onPress: copyWorktreePath },
       { id: "btn-create-tree", label: "Create worktree", disabled: !tree || busy(), onPress: () => openNewTree(tree?.branch ?? undefined) },
       { id: "btn-delete", label: "Delete", variant: "danger", disabled: !linked, onPress: openDelete },
@@ -260,10 +279,14 @@ export function App() {
     const row = target === "projects"
       ? selectedRowTop(projectIndex(), filteredProjects().length, projectListHeight(), 1)
       : selectedRowTop(treeIndex(), treeEntries().length, treeListHeight() - 1, 1)
-    openContextMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, renameOpen: false })
+    openContextMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, submenu: null })
   }
 
   function submenuActions(): Action[] {
+    if (menu()?.submenu === "git") return [
+      { id: "btn-pull", label: "Pull", disabled: busy(), onPress: pullTree },
+      { id: "btn-ship", label: "Ship", disabled: busy(), onPress: openShip },
+    ]
     return [
       { id: "btn-manual-rename", label: "Manual", onPress: openManualRename },
       { id: "btn-auto-rename", label: "Auto", disabled: !selectedTree()?.branch, onPress: () => void autoRename() },
@@ -374,7 +397,7 @@ export function App() {
           cancelModal, acceptModal, selectLog, toggleStopRow, stopPicked, toggleSourceMenu, pickSource, toggleRenameFolder,
           abortRename },
         settings: { settingsOpen, setSettingsOpen, settingsHighlight, setSettingsHighlight,
-          pickSettings, toggleSettings, saveSettings },
+          pickSettings, toggleSettings, saveSettings, selectSection: settingsWorkflow.selectSection },
         path: { pathSuggestions, pathIndex, setPathIndex, input: () => modalInput, applyPath },
       })
       return
@@ -431,6 +454,10 @@ export function App() {
   function confirmModal() {
     const current = modal()
     if (!current) return
+    if (current.kind === "ship") {
+      void startShip()
+      return
+    }
     if (current.kind === "unregister") {
       unregister()
       return
@@ -555,9 +582,16 @@ export function App() {
             busy={busy()} blocked={Boolean(modal() || menu())}
             query={queries().trees} project={selectedProject()}
             trees={treeEntries()} selectedIndex={treeIndex()} focusedGroup={focusedGroup()}
-            collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()}
+            collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()} shipping={shipping()}
             on={{
               focus: () => focusPane("trees"), new: () => openNewTree(),
+              openPR: (url) => { void execOkAsync([process.platform === "darwin" ? "open" : "xdg-open", url], { timeoutMs: 10000 }).catch((error) => setStatus(String(error))) },
+              prMenu: (tree, pr, x, y) => {
+                if (modal() || busy()) return
+                pickTree(tree.path)
+                focusPane("trees")
+                openContextMenu({ pane: "pr", x, y, submenu: null, pr, cwd: tree.path, state: tree.prState ?? null })
+              },
               pickEntry, pickTree, toggleGroup,
               menu: (x, y) => openMenu("trees", x, y),
               listLayout: (node, height) => { treeList = node; setTreeListHeight(height) },

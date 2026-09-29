@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, type Accessor, type Setter } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import type { Project, ServerRow } from "../lib/types.ts"
@@ -164,7 +164,7 @@ type ModalLayerProps = {
   }
   settings: Pick<ReturnType<typeof createSettingsWorkflow>,
     "settingsOpen" | "setSettingsOpen" | "settingsHighlight" | "setSettingsHighlight" |
-    "toggleSettings" | "pickSettings" | "setPrompt" | "saveSettings">
+    "selectSection" | "toggleSettings" | "pickSettings" | "setPrompt" | "saveSettings">
   paths: ReturnType<typeof createPathWorkflow>
   actions: {
     cancelModal: () => void
@@ -230,7 +230,7 @@ export function ModalLayer(props: ModalLayerProps) {
             onMouseDown={(event) => {
               event.stopPropagation()
               const open = modal()
-              if (!sourceClickClaimed && open?.kind === "new-tree" && open.branchOpen) {
+              if (!sourceClickClaimed && (open?.kind === "new-tree" || open?.kind === "ship") && open.branchOpen) {
                 setModal({ ...open, branchOpen: false })
               }
             }}
@@ -241,6 +241,8 @@ export function ModalLayer(props: ModalLayerProps) {
             {current().kind === "settings" ? (
               <SettingsForm
                 draft={current() as Extract<Modal, { kind: "settings" }>}
+                section={(current() as Extract<Modal, { kind: "settings" }>).section}
+                onSection={props.settings.selectSection}
                 error={(current() as Extract<Modal, { kind: "settings" }>).error}
                 focus={modalFocus() as SettingsFocus}
                 open={settingsOpen()}
@@ -294,14 +296,24 @@ export function ModalLayer(props: ModalLayerProps) {
                     }}
                   />
                 ) : null}
-                <Show when={current().kind === "new-tree"}>
+                <Show when={current().kind === "new-tree" || current().kind === "ship"}>
                   {(() => {
-                    const draft = current() as Extract<Modal, { kind: "new-tree" }>
+                    const draft = current() as Extract<Modal, { kind: "new-tree" | "ship" }>
                     const open = () => Boolean(draft.branchOpen)
                     const active = () => modalFocus() === "source" || open()
+                    const branchOffset = createMemo((offset: number) => {
+                      const highlighted = settingsHighlight()
+                      if (highlighted < offset) return highlighted
+                      if (highlighted >= offset + 8) return highlighted - 7
+                      return offset
+                    }, 0)
+                    const visibleBranches = createMemo(() => {
+                      const offset = branchOffset()
+                      return draft.branches.slice(offset, offset + 8).map((name, index) => ({ name, index: offset + index }))
+                    })
                     return (
                       <box flexGrow={1} flexShrink={0} flexDirection="column">
-                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>Source branch</text>
+                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>{draft.kind === "ship" ? "PR target branch" : "Source branch"}</text>
                         <box height={3} flexShrink={0}>
                           <box
                             id="source-branch"
@@ -324,7 +336,7 @@ export function ModalLayer(props: ModalLayerProps) {
                               toggleSourceMenu()
                             }}
                           >
-                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft.source || "no branches"}</text>
+                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft.source || "Choose a branch"}</text>
                             <text fg={theme.muted} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{open() ? "▴" : "▾"}</text>
                           </box>
                         </box>
@@ -335,27 +347,34 @@ export function ModalLayer(props: ModalLayerProps) {
                             top={4}
                             left={0}
                             width="100%"
-                            height={draft.branches.length + 2}
+                            height={Math.min(draft.branches.length + 2, 10)}
                             zIndex={40}
+                            title={draft.branches.length > 8 ? "↑↓ / scroll" : undefined}
                             border
                             borderColor={theme.accent}
+                            onMouseScroll={(event) => {
+                              event.stopPropagation()
+                              const delta = event.scroll?.direction === "up" ? -1 : 1
+                              setSettingsHighlight(Math.max(0, Math.min(draft.branches.length - 1, settingsHighlight() + delta)))
+                            }}
                             backgroundColor={theme.header}
                             onMouseDown={(event) => {
                               event.stopPropagation()
                               claimSourceClick()
                             }}
                           >
-                            <For each={draft.branches}>{(name, index) => {
-                              const hot = () => settingsHighlight() === index()
+                            <For each={visibleBranches()}>{({ name, index }) => {
+                              const hot = () => settingsHighlight() === index
                               const selected = () => name === draft.source
                               return (
                                 <box
+                                  id={`source-option-${index}`}
                                   height={1}
                                   flexShrink={0}
                                   paddingLeft={1}
                                   paddingRight={1}
                                   backgroundColor={hot() ? theme.selectedBg : theme.header}
-                                  onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }}
+                                  onMouseOver={() => { pointAt(); setSettingsHighlight(index) }}
                                   onMouseOut={pointAway}
                                   onMouseDown={(event) => {
                                     event.stopPropagation()
@@ -363,7 +382,7 @@ export function ModalLayer(props: ModalLayerProps) {
                                     if (event.button === 0) pickSource(name)
                                   }}
                                 >
-                                  <text fg={hot() || selected() ? theme.selectedFg : theme.text} selectable={false} onMouseOver={() => { pointAt(); setSettingsHighlight(index()) }} onMouseOut={pointAway}>
+                                  <text fg={hot() || selected() ? theme.selectedFg : theme.text} selectable={false} onMouseOver={() => { pointAt(); setSettingsHighlight(index) }} onMouseOut={pointAway}>
                                     {`${selected() ? "●" : "○"} ${name}`}
                                   </text>
                                 </box>
@@ -413,7 +432,7 @@ export function ModalLayer(props: ModalLayerProps) {
                 <box flexDirection="row" justifyContent="flex-end" gap={1}>
                   <ActionButton
                     id="btn-submit"
-                    label={"value" in current() ? "submit" : "confirm"}
+                    label={current().kind === "ship" ? "Ship" : "value" in current() ? "submit" : "confirm"}
                     variant="accent"
                     active={modalFocus() === "submit"}
                     onPress={() => {

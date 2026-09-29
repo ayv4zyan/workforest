@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js"
 import { useRenderer } from "@opentui/solid"
-import type { MouseEvent } from "@opentui/core"
+import { TextAttributes, type MouseEvent } from "@opentui/core"
 import { theme } from "../theme.ts"
 
 type Variant = "default" | "accent" | "danger" | "ghost"
@@ -16,6 +16,9 @@ export function ActionButton(props: {
   compact?: boolean
   align?: "left" | "center"
   onHover?: () => void
+  onContextMenu?: (x: number, y: number) => void
+  backgroundColor?: string
+  underlined?: boolean
 }) {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
@@ -40,6 +43,7 @@ export function ActionButton(props: {
   }
 
   const bg = () => {
+    if (props.backgroundColor) return props.backgroundColor
     if (props.disabled) return theme.panel
     if (props.active && variant() === "danger") return "#3d1114"
     if (props.active) return theme.selectedBg
@@ -50,7 +54,9 @@ export function ActionButton(props: {
   function press(event: MouseEvent) {
     event.stopPropagation()
     event.preventDefault()
-    if (props.disabled || event.button !== 0) return
+    if (props.disabled) return
+    if (event.button === 2) { props.onContextMenu?.(event.x, event.y); return }
+    if (event.button !== 0) return
     props.onPress()
   }
 
@@ -81,7 +87,7 @@ export function ActionButton(props: {
         renderer.requestRender()
       }}
     >
-      <text fg={fg()} selectable={false} onMouseDown={press}>
+      <text fg={fg()} attributes={props.underlined ? TextAttributes.UNDERLINE : TextAttributes.NONE} selectable={false} onMouseDown={press}>
         {props.label}
       </text>
       {props.trailingLabel ? (
