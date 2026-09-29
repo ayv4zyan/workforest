@@ -53,7 +53,7 @@ export function App() {
     setProjects, selectedProjectId, selectProject,
     selectedTreePath, setSelectedTreePath, focusedGroup, collapsedGroups, servers,
     filteredProjects, selectedProject, selectedTree,
-    treeServers, activeServers, treeEntries, toggleGroup, pickEntry,
+    treeServers, activeServers, treeEntries, toggleGroup, pickEntry, isPinned, pinTree,
     pickTree, refresh, loadTreesFor,
   } = createWorkspace({ home: dataDir, queries, onError: setStatus })
   const [busy, setBusy] = createSignal(false)
@@ -253,6 +253,8 @@ export function App() {
     const running = activeServers().length > 0
     return [
       { id: "btn-rename", label: "Rename", submenu: "rename", trailingLabel: "›", disabled: !linked, onPress: () => openSubmenu("rename") },
+      { id: tree && isPinned(tree.path) ? "btn-unpin" : "btn-pin", label: tree && isPinned(tree.path) ? "Unpin" : "Pin", disabled: !tree || busy(),
+        onPress: () => { if (tree) pinTree(tree.path, !isPinned(tree.path)) } },
       running
         ? { id: "btn-menu-stop", label: "Stop", variant: "danger", disabled: !tree || busy(), onPress: toggleServer }
         : { id: "btn-menu-run", label: "Run", variant: "accent", disabled: !tree || busy(), onPress: toggleServer },

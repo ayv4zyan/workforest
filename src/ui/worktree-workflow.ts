@@ -5,6 +5,7 @@ import { loadAutoRename } from "../lib/auto-rename-settings.ts"
 import { setupWorktreeDepsAsync } from "../lib/deps.ts"
 import { displayPath } from "../lib/display-path.ts"
 import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, pullWorktree, removeWorktreeAsync, renameWorktree, worktreeDisplayName } from "../lib/git.ts"
+import { movePinnedWorktree, setWorktreePinned } from "../lib/config.ts"
 import { movePort } from "../lib/ports.ts"
 import { forgetWorktreeRuntime, moveRunRecord, serversForWorktree, stopServer } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
@@ -202,6 +203,7 @@ export function createWorktreeWorkflow(options: {
       if (renamed.path !== tree.path) {
         moveRunRecord(options.home(), project.id, tree.path, renamed.path)
         movePort(options.home(), tree.path, renamed.path)
+        movePinnedWorktree(options.home(), tree.path, renamed.path)
       }
       workspace.setSelectedTreePath(renamed.path)
       dialog.setModal(null)
@@ -220,6 +222,7 @@ export function createWorktreeWorkflow(options: {
       for (const row of serversForWorktree(workspace.servers(), tree.path).filter((row) => row.state !== "failed")) await stopServer(options.home(), row)
       await removeWorktreeAsync({ repoPath: project.path, tree, force: tree.dirty })
       forgetWorktreeRuntime(options.home(), project.id, tree.path)
+      setWorktreePinned(options.home(), tree.path, false)
       return `deleted ${tree.displayName}`
     })
     dialog.setModal(null)

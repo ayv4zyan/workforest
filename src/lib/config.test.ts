@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { addProject, loadConfig, removeProject, setProjectPaneWidth, setProjectStartCommand, setSelectedProjectId } from "./config.ts"
+import { addProject, loadConfig, movePinnedWorktree, removeProject, setProjectPaneWidth, setProjectStartCommand, setSelectedProjectId, setWorktreePinned } from "./config.ts"
 import { execOk } from "./exec.ts"
 
 function initRepo(): string {
@@ -60,4 +60,21 @@ test("selected project persists and falls back when removed", () => {
   expect(() => setSelectedProjectId(home, "missing")).toThrow("Unknown project")
   removeProject(home, second.id)
   expect(loadConfig(home).ui).toEqual({ projectPaneWidth: 42, selectedProjectId: first.id })
+})
+
+test("pinned worktree paths persist without duplicates and follow a moved folder", () => {
+  const home = mkdtempSync(join(tmpdir(), "wf-pins-home-"))
+  const project = addProject(home, initRepo())
+  setSelectedProjectId(home, project.id)
+  expect(setWorktreePinned(home, "/trees/one", true).pinnedWorktreePaths).toEqual(["/trees/one"])
+  expect(setWorktreePinned(home, "/trees/one", true).pinnedWorktreePaths).toEqual(["/trees/one"])
+  expect(setWorktreePinned(home, "/trees/two", true).pinnedWorktreePaths).toEqual(["/trees/one", "/trees/two"])
+  movePinnedWorktree(home, "/trees/one", "/trees/two")
+  expect(loadConfig(home).ui).toEqual({ selectedProjectId: project.id, pinnedWorktreePaths: ["/trees/two"], unpinnedMainWorktreePaths: [] })
+  expect(setWorktreePinned(home, "/trees/two", false).pinnedWorktreePaths).toEqual([])
+  expect(loadConfig(home).ui?.pinnedWorktreePaths).toEqual([])
+  expect(setWorktreePinned(home, "/main", false, true).unpinnedMainWorktreePaths).toEqual(["/main"])
+  expect(setWorktreePinned(home, "/main", false, true).unpinnedMainWorktreePaths).toEqual(["/main"])
+  expect(loadConfig(home).ui?.unpinnedMainWorktreePaths).toEqual(["/main"])
+  expect(setWorktreePinned(home, "/main", true, true).unpinnedMainWorktreePaths).toEqual([])
 })

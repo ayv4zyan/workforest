@@ -1,13 +1,13 @@
 import { createEffect, createMemo, createSignal, onCleanup, type Accessor } from "solid-js"
 import { loadPullRequest, loadPullRequestState, savePullRequestState, type PullRequest, type PullRequestState } from "../lib/branch-metadata.ts"
-import { loadConfig, setSelectedProjectId as saveSelectedProjectId } from "../lib/config.ts"
+import { loadConfig, setSelectedProjectId as saveSelectedProjectId, setWorktreePinned } from "../lib/config.ts"
 import { isDirtyAsync, listWorktreesAsync, worktreeDisplayName } from "../lib/git.ts"
 import { collectServersAsync, serversForWorktree } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
 
 export type Pane = "projects" | "trees"
 export type TreeRow = GitWorktree & { dirty: boolean; displayName: string; pr?: PullRequest | null; prState?: PullRequestState | null }
-export type TreeGroup = "running" | "stopped"
+export type TreeGroup = "pinned" | "running" | "stopped"
 export type TreeEntry = { kind: "group"; group: TreeGroup; count: number } | { kind: "tree"; tree: TreeRow }
 
 export function createWorkspace(options: {
@@ -19,8 +19,10 @@ export function createWorkspace(options: {
   const [selectedProjectId, setSelectedProjectId] = createSignal<string | null>(null)
   const [trees, setTrees] = createSignal<TreeRow[]>([])
   const [selectedTreePath, setSelectedTreePath] = createSignal<string | null>(null)
-  const [collapsedGroups, setCollapsedGroups] = createSignal<Record<TreeGroup, boolean>>({ running: false, stopped: false })
+  const [collapsedGroups, setCollapsedGroups] = createSignal<Record<TreeGroup, boolean>>({ pinned: false, running: false, stopped: false })
   const [focusedGroup, setFocusedGroup] = createSignal<TreeGroup | null>(null)
+  const [pinnedPaths, setPinnedPaths] = createSignal<string[]>([])
+  const [unpinnedMainPaths, setUnpinnedMainPaths] = createSignal<string[]>([])
   const [servers, setServers] = createSignal<ServerRow[]>([])
 
   const matches = (query: string, name: string) => name.toLowerCase().includes(query.toLowerCase())
@@ -53,20 +55,34 @@ export function createWorkspace(options: {
     return tree ? serversForWorktree(servers(), tree.path) : []
   }
   const activeServers = () => treeServers().filter((row) => row.state !== "failed")
+  const isPinned = (path: string) => pinnedPaths().includes(path) ||
+    Boolean(trees().find((tree) => tree.path === path)?.isMain && !unpinnedMainPaths().includes(path))
+  function pinTree(path: string, pinned: boolean) {
+    try {
+      const preference = setWorktreePinned(options.home(), path, pinned, Boolean(trees().find((tree) => tree.path === path)?.isMain))
+      setPinnedPaths(preference.pinnedWorktreePaths)
+      setUnpinnedMainPaths(preference.unpinnedMainWorktreePaths)
+    } catch (error) {
+      options.onError(error instanceof Error ? error.message : String(error))
+    }
+  }
   const groupedTrees = createMemo(() => {
     const sorted = [...filteredTrees()].sort((a, b) => a.displayName.localeCompare(b.displayName, undefined, { sensitivity: "base", numeric: true }) || a.path.localeCompare(b.path))
+    const pinned: TreeRow[] = []
     const running: TreeRow[] = []
     const stopped: TreeRow[] = []
     for (const tree of sorted) {
       const active = serversForWorktree(servers(), tree.path).some((row) => row.state !== "failed")
-      if (active) running.push(tree)
+      if (isPinned(tree.path)) pinned.push(tree)
+      else if (active) running.push(tree)
       else stopped.push(tree)
     }
-    return { running, stopped }
+    return { pinned, running, stopped }
   })
   const treeEntries = createMemo<TreeEntry[]>(() => {
     const entries: TreeEntry[] = []
-    for (const group of ["running", "stopped"] as const) {
+    for (const group of ["pinned", "running", "stopped"] as const) {
+      if (group === "pinned" && !groupedTrees().pinned.length) continue
       if (options.queries().trees && !groupedTrees()[group].length) continue
       entries.push({ kind: "group", group, count: groupedTrees()[group].length })
       if (options.queries().trees || !collapsedGroups()[group]) entries.push(...groupedTrees()[group].map((tree): TreeEntry => ({ kind: "tree", tree })))
@@ -76,7 +92,7 @@ export function createWorkspace(options: {
 
   createEffect(() => {
     if (focusedGroup()) return
-    for (const group of ["running", "stopped"] as const) {
+    for (const group of ["pinned", "running", "stopped"] as const) {
       if (collapsedGroups()[group] && groupedTrees()[group].some((tree) => tree.path === selectedTreePath())) {
         setCollapsedGroups((current) => ({ ...current, [group]: false }))
       }
@@ -141,6 +157,8 @@ export function createWorkspace(options: {
     refreshPending = true
     try {
       const config = loadConfig(options.home())
+      setPinnedPaths(config.ui?.pinnedWorktreePaths ?? [])
+      setUnpinnedMainPaths(config.ui?.unpinnedMainWorktreePaths ?? [])
       const currentId = config.projects.some((project) => project.id === selectedProjectId())
         ? selectedProjectId()
         : config.projects.some((project) => project.id === config.ui?.selectedProjectId)
@@ -192,14 +210,14 @@ export function createWorkspace(options: {
     }
     if (displayedProjectId !== projectId) setTrees([])
     setFocusedGroup(null)
-    setCollapsedGroups({ running: false, stopped: false })
+    setCollapsedGroups({ pinned: false, running: false, stopped: false })
     void refresh()
   }
 
   return {
     projects, setProjects, selectedProjectId, selectProject,
     trees, setTrees, selectedTreePath, setSelectedTreePath,
-    focusedGroup, collapsedGroups, servers, filteredProjects, filteredTrees,
+    focusedGroup, collapsedGroups, servers, filteredProjects, filteredTrees, isPinned, pinTree,
     selectedProject, selectedTree, treeServers, activeServers, treeEntries,
     toggleGroup, pickEntry, pickTree, refresh, loadTreesFor,
   }
