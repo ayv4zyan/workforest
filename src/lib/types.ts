@@ -19,6 +19,8 @@ export type Config = {
   ui?: {
     projectPaneWidth?: number
     selectedProjectId?: string
+    pinnedWorktreePaths?: string[]
+    unpinnedMainWorktreePaths?: string[]
   }
   autoRename?: AutoRenameConfig
   ship?: AutoRenameConfig

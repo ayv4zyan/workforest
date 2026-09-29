@@ -58,8 +58,8 @@ test.serial("worktree details follow selection and long rows fit the pane after 
     const main = findText(setup.captureCharFrame(), "(main)")
     const feature = findText(setup.captureCharFrame(), "feature-long")
     const short = findText(setup.captureCharFrame(), "short-feature")
-    expect(main.y - feature.y).toBe(1)
-    expect(short.y - main.y).toBe(2)
+    expect(main.y).toBeLessThan(feature.y)
+    expect(short.y - feature.y).toBe(1)
     await setup.mockMouse.click(feature.x, feature.y)
     await paint(setup)
     for (const width of [90, 60]) {
@@ -68,8 +68,8 @@ test.serial("worktree details follow selection and long rows fit the pane after 
       const frame = setup.captureCharFrame()
       const selected = findText(frame, "feature-")
       const next = findText(frame, "short-feature")
-      expect(next.y - selected.y).toBe(3)
-      expect(findText(frame, "(main)").y - selected.y).toBe(2)
+      expect(next.y - selected.y).toBe(2)
+      expect(findText(frame, "(main)").y).toBeLessThan(selected.y)
       const lines = frame.split("\n")
       // The long branch and path must leave the pane's right border intact.
       expect(lines[selected.y]![width - 1]).toBe("│")
@@ -600,7 +600,8 @@ test.serial("worktree start saves a custom project command, remembers it, shows 
       if (setup.captureCharFrame().includes("Running")) break
     }
     expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
-    expect(setup.captureCharFrame()).toContain("Running (1)")
+    expect(setup.captureCharFrame()).toContain("Pinned (1)")
+    expect(setup.captureCharFrame()).toContain("Running (0)")
     expect(setup.captureCharFrame()).toContain("Not running (0)")
     expect(setup.captureCharFrame().split("\n").slice(0, 3).join("\n")).toContain("■")
     expect(setup.captureCharFrame()).not.toContain("2 servers")
@@ -832,6 +833,7 @@ test.serial("row menus target the clicked item, protect main, and support mouse 
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
     setup.mockInput.pressArrow("down")
+    setup.mockInput.pressArrow("down")
     setup.mockInput.pressEnter()
     await paint(setup)
     expect(setup.captureCharFrame()).toContain("Delete feature-menu?")
@@ -1032,6 +1034,13 @@ test.serial("worktree menu runs an idle worktree and stops one that is already r
     expect(findById(setup.renderer.root, "btn-menu-stop")).toBeTruthy()
     expect(findById(setup.renderer.root, "btn-menu-run")).toBeUndefined()
     expect(setup.captureCharFrame()).toContain("Stop")
+    await click("btn-pin")
+    expect(setup.captureCharFrame()).toContain("Pinned (2)")
+    expect(setup.captureCharFrame()).toContain("Running (0)")
+    await rightClick("feature-run")
+    await click("btn-unpin")
+    expect(setup.captureCharFrame()).toContain("Pinned (1)")
+    expect(setup.captureCharFrame()).toContain("Running (1)")
     setup.mockInput.pressEscape()
     await paint(setup)
 
@@ -1201,14 +1210,15 @@ test.serial("worktree groups sort names and collapse with mouse and keyboard", a
   try {
     await paint(setup)
     const frame = setup.captureCharFrame()
-    expect(findText(frame, "Running (0)").y).toBeLessThan(findText(frame, "Not running (4)").y)
+    expect(findText(frame, "Pinned (1)").y).toBeLessThan(findText(frame, "Running (0)").y)
+    expect(findText(frame, "Running (0)").y).toBeLessThan(findText(frame, "Not running (3)").y)
     expect(findText(frame, "Alpha").y).toBeLessThan(findText(frame, "beta").y)
     expect(findText(frame, "beta").y).toBeLessThan(findText(frame, "zebra").y)
     const header = findById(setup.renderer.root, "tree-group-stopped")!
     await setup.mockMouse.click(header.x + 1, header.y)
     await paint(setup)
     expect(setup.captureCharFrame()).not.toContain("zebra")
-    expect(setup.captureCharFrame()).toContain("▸ Not running (4)")
+    expect(setup.captureCharFrame()).toContain("▸ Not running (3)")
     setup.mockInput.pressEnter()
     await paint(setup)
     expect(setup.captureCharFrame()).toContain("zebra")
@@ -1219,6 +1229,89 @@ test.serial("worktree groups sort names and collapse with mouse and keyboard", a
     expect(findById(setup.renderer.root, "btn-copy-path")).toBeTruthy()
   } finally {
     setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test.serial("pinning moves worktrees into a collapsible group and persists across restarts", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-pinned-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = addProject(home, repo)
+  const alpha = createWorktree({ repoPath: repo, home, projectId: project.id, name: "Alpha" })
+  createWorktree({ repoPath: repo, home, projectId: project.id, name: "beta" })
+  const setup = await testRender(() => <App />, { width: 100, height: 24 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y)
+    await paint(setup)
+  }
+  const rightClick = async (name: string) => {
+    const at = findText(setup.captureCharFrame(), name)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  try {
+    try {
+      await paint(setup)
+      expect(setup.captureCharFrame()).toContain("Pinned (1)")
+      await rightClick("(main)")
+      expect(findById(setup.renderer.root, "btn-unpin")).toBeTruthy()
+      await click("btn-unpin")
+      expect(findById(setup.renderer.root, "tree-group-pinned")).toBeUndefined()
+      expect(loadConfig(home).ui?.unpinnedMainWorktreePaths).toEqual([repo])
+      await rightClick("Alpha")
+      expect(findById(setup.renderer.root, "btn-pin")!.y).toBeLessThan(findById(setup.renderer.root, "btn-menu-run")!.y)
+      await click("btn-pin")
+      let frame = setup.captureCharFrame()
+      expect(frame).toContain("Pinned (1)")
+      expect(frame).toContain("Not running (2)")
+      expect(findText(frame, "Pinned (1)").y).toBeLessThan(findText(frame, "Running (0)").y)
+      expect(loadConfig(home).ui?.pinnedWorktreePaths).toEqual([alpha.path])
+
+      await rightClick("beta")
+      await click("btn-pin")
+      frame = setup.captureCharFrame()
+      expect(frame).toContain("Pinned (2)")
+      expect(findText(frame, "Alpha").y).toBeLessThan(findText(frame, "beta").y)
+      expect(frame.split("\n").filter((line) => line.includes("○ Alpha"))).toHaveLength(1)
+      expect(frame.split("\n").filter((line) => line.includes("○ beta"))).toHaveLength(1)
+
+      await click("tree-group-pinned")
+      expect(setup.captureCharFrame()).toContain("▸ Pinned (2)")
+      expect(setup.captureCharFrame()).not.toContain("○ Alpha")
+      expect(setup.captureCharFrame()).not.toContain("○ beta")
+      await click("tree-group-pinned")
+      await rightClick("Alpha")
+      expect(findById(setup.renderer.root, "btn-unpin")).toBeTruthy()
+      await click("btn-unpin")
+      frame = setup.captureCharFrame()
+      expect(frame).toContain("Pinned (1)")
+      expect(frame).toContain("Not running (2)")
+      expect(frame.split("\n").filter((line) => line.includes("○ Alpha"))).toHaveLength(1)
+
+      await rightClick("beta")
+      await click("btn-unpin")
+      expect(findById(setup.renderer.root, "tree-group-pinned")).toBeUndefined()
+      await rightClick("Alpha")
+      await click("btn-pin")
+    } finally {
+      setup.renderer.destroy()
+    }
+    const reopened = await testRender(() => <App />, { width: 100, height: 24 })
+    try {
+      await paint(reopened)
+      expect(reopened.captureCharFrame()).toContain("Pinned (1)")
+      expect(reopened.captureCharFrame()).toContain("Not running (2)")
+    } finally { reopened.renderer.destroy() }
+  } finally {
     process.env.WORKFOREST_HOME = oldHome
     rmSync(root, { recursive: true, force: true })
   }

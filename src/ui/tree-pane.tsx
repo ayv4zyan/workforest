@@ -103,7 +103,7 @@ export function TreePane(props: Props) {
                 props.on.focus()
                 props.on.toggleGroup(entry.group)
               }}
-            ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${props.collapsedGroups[entry.group] ? "▸" : "▾"} ${entry.group === "running" ? "Running" : "Not running"} (${entry.count})`}</text></box>
+            ><text height={1} wrapMode="none" truncate selectable={false} fg={theme.accent}>{`${props.collapsedGroups[entry.group] ? "▸" : "▾"} ${{ pinned: "Pinned", running: "Running", stopped: "Not running" }[entry.group]} (${entry.count})`}</text></box>
             const tree = entry.tree
             const selected = () => index === props.selectedIndex
             const name = () => {

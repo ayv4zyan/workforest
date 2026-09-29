@@ -24,7 +24,15 @@ function isConfig(value: unknown): value is Config {
     (value.ui.projectPaneWidth !== undefined &&
       (typeof value.ui.projectPaneWidth !== "number" || !Number.isFinite(value.ui.projectPaneWidth))) ||
     (value.ui.selectedProjectId !== undefined &&
-      (typeof value.ui.selectedProjectId !== "string" || value.ui.selectedProjectId.length === 0)))) return false
+      (typeof value.ui.selectedProjectId !== "string" || value.ui.selectedProjectId.length === 0)) ||
+    (value.ui.pinnedWorktreePaths !== undefined &&
+      (!Array.isArray(value.ui.pinnedWorktreePaths) ||
+        !value.ui.pinnedWorktreePaths.every((path: unknown) => typeof path === "string" && path.length > 0) ||
+        new Set(value.ui.pinnedWorktreePaths).size !== value.ui.pinnedWorktreePaths.length)) ||
+    (value.ui.unpinnedMainWorktreePaths !== undefined &&
+      (!Array.isArray(value.ui.unpinnedMainWorktreePaths) ||
+        !value.ui.unpinnedMainWorktreePaths.every((path: unknown) => typeof path === "string" && path.length > 0) ||
+        new Set(value.ui.unpinnedMainWorktreePaths).size !== value.ui.unpinnedMainWorktreePaths.length)))) return false
   return true
 }
 
@@ -72,6 +80,36 @@ export function setSelectedProjectId(home: string, projectId: string): void {
   if (!config.projects.some((project) => project.id === projectId)) throw new Error(`Unknown project "${projectId}"`)
   if (config.ui?.selectedProjectId === projectId) return
   config.ui = { ...config.ui, selectedProjectId: projectId }
+  saveConfig(home, config)
+}
+
+export function setWorktreePinned(home: string, path: string, pinned: boolean, isMain = false): {
+  pinnedWorktreePaths: string[]
+  unpinnedMainWorktreePaths: string[]
+} {
+  const config = loadConfig(home)
+  const paths = config.ui?.pinnedWorktreePaths ?? []
+  const unpinnedMainPaths = config.ui?.unpinnedMainWorktreePaths ?? []
+  const next = isMain ? paths.filter((entry) => entry !== path)
+    : pinned ? paths.includes(path) ? paths : [...paths, path] : paths.filter((entry) => entry !== path)
+  const nextUnpinnedMain = isMain
+    ? pinned ? unpinnedMainPaths.filter((entry) => entry !== path)
+      : unpinnedMainPaths.includes(path) ? unpinnedMainPaths : [...unpinnedMainPaths, path]
+    : unpinnedMainPaths
+  if (next.length === paths.length && nextUnpinnedMain.length === unpinnedMainPaths.length) {
+    return { pinnedWorktreePaths: paths, unpinnedMainWorktreePaths: unpinnedMainPaths }
+  }
+  config.ui = { ...config.ui, pinnedWorktreePaths: next, unpinnedMainWorktreePaths: nextUnpinnedMain }
+  saveConfig(home, config)
+  return { pinnedWorktreePaths: next, unpinnedMainWorktreePaths: nextUnpinnedMain }
+}
+
+export function movePinnedWorktree(home: string, oldPath: string, newPath: string): void {
+  if (oldPath === newPath) return
+  const config = loadConfig(home)
+  const paths = config.ui?.pinnedWorktreePaths ?? []
+  if (!paths.includes(oldPath)) return
+  config.ui = { ...config.ui, pinnedWorktreePaths: [...new Set(paths.map((path) => path === oldPath ? newPath : path))] }
   saveConfig(home, config)
 }
 
