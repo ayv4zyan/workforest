@@ -1,11 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { execAsync, execOkAsync } from "./exec.ts"
 import { git, gitNetworkEnv } from "./git.ts"
 import { parsePullRequest, savePullRequest, type PullRequest } from "./branch-metadata.ts"
 import { parseShipPlan, runShipAgent, type ShipAgentRequest, type ShipPlan } from "./ship-agent.ts"
 import { secretFileGlobs } from "./ship-context.ts"
+import { lockfilesMatch } from "./deps.ts"
 import type { ShipSettings } from "./ship-settings.ts"
 import type { GitWorktree } from "./types.ts"
 
@@ -30,6 +31,7 @@ export function prePushFailed(trace: string): boolean {
 
 export async function shipWorktree(options: {
   tree: GitWorktree
+  mainPath?: string
   base: string
   settings: ShipSettings
   onProgress: (text: string) => void
@@ -82,6 +84,13 @@ export async function shipWorktree(options: {
   let existing = await listPR()
   if (existing.length > 1) throw new Error("Multiple open PRs for this branch; resolve them before shipping")
   if (existing[0] && existing[0].base !== base) throw new Error(`PR #${existing[0].number} targets ${existing[0].base}. Choose that target to update it.`)
+  const modules = join(cwd, "node_modules")
+  if (options.mainPath && !tree.isMain && resolve(options.mainPath) !== resolve(cwd) && !existsSync(modules)
+    && existsSync(join(options.mainPath, "node_modules")) && lockfilesMatch(options.mainPath, cwd)
+    && git(cwd, ["check-ignore", "--quiet", "--", "node_modules"]).exitCode === 0) {
+    onProgress("linking matching dependencies")
+    symlinkSync(join(options.mainPath, "node_modules"), modules, "dir")
+  }
   const dir = mkdtempSync(join(tmpdir(), "workforest-ship-"))
   try {
     const agent = options.agent ?? runShipAgent
@@ -115,7 +124,7 @@ export async function shipWorktree(options: {
     if (await status()) {
       // No repair is permitted until the user's original work is committed.
       try { await commit(plan) } catch (error) {
-        throw new Error(`Could not commit user changes; no AI repairs were made. ${error instanceof Error ? error.message : error}`)
+        throw new Error(`Commit failed: ${error instanceof Error ? error.message : error}. No AI repairs were made; changes kept.`)
       }
     }
     let repairs = 0

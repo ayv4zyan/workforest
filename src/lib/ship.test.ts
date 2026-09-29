@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createWorktree, gitOk, renameWorktree } from "./git.ts"
@@ -316,10 +316,27 @@ test("initial commit hook failure preserves user changes and never starts a repa
   await expect(shipWorktree({ tree, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async (request) => {
     phases.push(request.phase)
     return plan
-  } })).rejects.toThrow("no AI repairs were made")
+  } })).rejects.toThrow(/^Commit failed: commit check failed/)
   expect(phases).toEqual(["prepare"])
   expect(gitOk(tree.path, ["show", "HEAD:app.txt"])).toBe("original")
   expect(readFileSync(join(tree.path, "app.txt"), "utf8")).toBe("user work")
+})
+
+test("Ship links ignored matching main dependencies before the user's pre-commit hook", async () => {
+  const { tree, repo } = fixture()
+  mkdirSync(join(repo, "node_modules"))
+  writeFileSync(join(repo, "node_modules", "hook-tool"), "available")
+  writeFileSync(join(repo, "bun.lock"), "matching lock")
+  writeFileSync(join(tree.path, "bun.lock"), "matching lock")
+  writeFileSync(join(tree.path, ".gitignore"), "/node_modules\n")
+  writeFileSync(join(tree.path, "app.txt"), "user changes")
+  const hook = join(repo, ".git", "hooks", "pre-commit")
+  writeFileSync(hook, '#!/bin/sh\ntest -f node_modules/hook-tool || { echo "missing hook tool" >&2; exit 1; }\n')
+  chmodSync(hook, 0o755)
+  await shipWorktree({ tree, mainPath: repo, base: "develop", settings: defaultShip(), onProgress: () => {}, agent: async () => plan })
+  expect(lstatSync(join(tree.path, "node_modules")).isSymbolicLink()).toBe(true)
+  expect(readlinkSync(join(tree.path, "node_modules"))).toBe(join(repo, "node_modules"))
+  expect(gitOk(tree.path, ["status", "--porcelain"]).trim()).toBe("")
 })
 
 test("cancelling a running configured pre-push hook keeps the user commit and creates no PR", async () => {

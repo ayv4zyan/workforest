@@ -7,6 +7,7 @@ import type { TreeRow } from "./workspace.ts"
 
 export function createShipWorkflow(options: {
   home: () => string
+  mainPath: () => string | null
   selectedTree: () => TreeRow | null
   busy: Accessor<boolean>
   setBusy: Setter<boolean>
@@ -50,7 +51,7 @@ export function createShipWorkflow(options: {
     options.setStatus("")
     setShipping({ path: current.tree.path, text: "" })
     try {
-      const pr = await shipWorktree({ tree: current.tree, base: current.source, settings, signal: controller.signal,
+      const pr = await shipWorktree({ tree: current.tree, mainPath: options.mainPath() ?? undefined, base: current.source, settings, signal: controller.signal,
         onProgress: (text) => { setShipping({ path: current.tree.path, text }) },
       })
       options.setStatus(`shipped ${current.tree.branch} · #${pr.number}`)

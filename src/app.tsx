@@ -87,7 +87,7 @@ export function App() {
     operation: { busy, setBusy, setStatus, run: runOp },
   })
   const { shipping, openShip, startShip, abortShip } = createShipWorkflow({
-    home: dataDir, selectedTree, busy, setBusy, setStatus, modal, setModal, setModalFocus, show: showModal, refresh,
+    home: dataDir, mainPath: () => selectedProject()?.path ?? null, selectedTree, busy, setBusy, setStatus, modal, setModal, setModalFocus, show: showModal, refresh,
   })
   let modalInput: InputRenderable | undefined
   const pathWorkflow = createPathWorkflow({
