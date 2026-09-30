@@ -2,7 +2,7 @@ import type { InputRenderable, KeyEvent } from "@opentui/core"
 import type { Accessor, Setter } from "solid-js"
 import { settingsFocusOrder, type SettingsField } from "./settings-modal.tsx"
 import { settingsOptions } from "./settings-workflow.ts"
-import { matchingBranches, type Modal, type ModalFocus } from "./modal-model.ts"
+import { isBranchModal, matchingBranches, type Modal, type ModalFocus } from "./modal-model.ts"
 import type { PathSuggestion } from "../lib/path-completion.ts"
 
 type Context = {
@@ -131,7 +131,7 @@ export function handleModalKey(key: KeyEvent, context: Context) {
         return
       }
       const openTreeModal = modal()
-      if ((openTreeModal?.kind === "new-tree" || openTreeModal?.kind === "ship") && openTreeModal.branchOpen) {
+      if (isBranchModal(openTreeModal) && openTreeModal.branchOpen) {
         const branches = matchingBranches(openTreeModal)
         if (key.name === "escape") {
           key.preventDefault()

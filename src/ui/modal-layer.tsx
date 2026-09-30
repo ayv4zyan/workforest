@@ -5,7 +5,7 @@ import type { Project, ServerRow } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
 import { SettingsForm, type SettingsFocus } from "./settings-modal.tsx"
-import { matchingBranches, modalBody, modalError, modalPlaceholder, modalSize, modalTitle, modalValue, type Modal, type ModalFocus } from "./modal-model.ts"
+import { isBranchModal, matchingBranches, modalBody, modalError, modalPlaceholder, modalSize, modalTitle, modalValue, type BranchModal, type Modal, type ModalFocus } from "./modal-model.ts"
 import type { TreeRow } from "./workspace.ts"
 import type { createSettingsWorkflow } from "./settings-workflow.ts"
 import type { createPathWorkflow } from "./path-workflow.ts"
@@ -230,7 +230,7 @@ export function ModalLayer(props: ModalLayerProps) {
             onMouseDown={(event) => {
               event.stopPropagation()
               const open = modal()
-              if (!sourceClickClaimed && (open?.kind === "new-tree" || open?.kind === "ship") && open.branchOpen) {
+              if (!sourceClickClaimed && isBranchModal(open) && open.branchOpen) {
                 setModal({ ...open, branchOpen: false })
               }
             }}
@@ -296,9 +296,9 @@ export function ModalLayer(props: ModalLayerProps) {
                     }}
                   />
                 ) : null}
-                <Show when={current().kind === "new-tree" || current().kind === "ship"}>
+                <Show when={isBranchModal(current())}>
                   {(() => {
-                    const draft = () => current() as Extract<Modal, { kind: "new-tree" | "ship" }>
+                    const draft = () => current() as BranchModal
                     const open = () => Boolean(draft().branchOpen)
                     const active = () => modalFocus() === "source" || open()
                     const branches = createMemo(() => matchingBranches(draft()))
@@ -314,7 +314,7 @@ export function ModalLayer(props: ModalLayerProps) {
                     })
                     return (
                       <box flexGrow={1} flexShrink={0} flexDirection="column">
-                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>{draft().kind === "ship" ? "PR target branch" : "Source branch"}</text>
+                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>{draft().kind === "ship" ? "PR target branch" : draft().kind === "switch-branch" ? "Switch to" : "Source branch"}</text>
                         <box height={3} flexShrink={0}>
                           <box
                             id="source-branch"
@@ -382,7 +382,7 @@ export function ModalLayer(props: ModalLayerProps) {
                               }}
                               onInput={(branchQuery) => {
                                 const now = modal()
-                                if (now?.kind !== "new-tree" && now?.kind !== "ship") return
+                                if (!isBranchModal(now)) return
                                 setSettingsHighlight(0)
                                 setModal({ ...now, branchQuery })
                               }}
@@ -459,7 +459,7 @@ export function ModalLayer(props: ModalLayerProps) {
                 <box flexDirection="row" justifyContent="flex-end" gap={1}>
                   <ActionButton
                     id="btn-submit"
-                    label={current().kind === "ship" ? "Ship" : "value" in current() ? "submit" : "confirm"}
+                    label={current().kind === "ship" ? "Ship" : current().kind === "switch-branch" ? "Switch" : "value" in current() ? "submit" : "confirm"}
                     variant="accent"
                     active={modalFocus() === "submit"}
                     onPress={() => {

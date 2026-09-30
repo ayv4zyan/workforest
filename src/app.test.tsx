@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
-import { realpathSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { realpathSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
@@ -2168,3 +2168,124 @@ test.serial("PR link uses saved state on startup before GitHub responds", async 
     rmSync(root, { recursive: true, force: true })
   }
 }, 15000)
+
+test.serial("Git submenu switches the selected worktree and keeps local changes when Git refuses", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-switch-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["config", "commit.gpgsign", "false"])
+  writeFileSync(join(repo, "README.md"), "hi\n")
+  gitOk(repo, ["add", "."])
+  gitOk(repo, ["commit", "-m", "init"])
+  gitOk(repo, ["checkout", "-b", "topic"])
+  writeFileSync(join(repo, "topic.txt"), "from topic\n")
+  gitOk(repo, ["add", "."])
+  gitOk(repo, ["commit", "-m", "topic"])
+  gitOk(repo, ["checkout", "-b", "other"])
+  writeFileSync(join(repo, "topic.txt"), "from other\n")
+  gitOk(repo, ["add", "."])
+  gitOk(repo, ["commit", "-m", "other"])
+  gitOk(repo, ["checkout", "main"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-switch", startPoint: "main" })
+  const setup = await testRender(() => <App />, { width: 120, height: 32 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const rightClick = async (label: string) => {
+    const at = findText(setup.captureCharFrame(), label)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  const optionText = (index: number) => {
+    const node = findById(setup.renderer.root, `source-option-${index}`)
+    const label = node?.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)
+    return label?.plainText ?? ""
+  }
+  const selectedBranch = () => {
+    const field = findById(setup.renderer.root, "source-branch")
+    const label = field?.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)
+    return label?.plainText ?? ""
+  }
+  try {
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes("feature-switch"); i++) await paint(setup)
+    await rightClick("(main)")
+    await click("btn-git")
+    expect(findById(setup.renderer.root, "btn-switch-branch")).toBeTruthy()
+    await setup.mockMouse.click(0, 0)
+    await paint(setup)
+
+    await rightClick("feature-switch")
+    expect(findById(setup.renderer.root, "btn-switch-branch")).toBeUndefined()
+    await click("btn-git")
+    const pull = findById(setup.renderer.root, "btn-pull")!
+    const switcher = findById(setup.renderer.root, "btn-switch-branch")!
+    const ship = findById(setup.renderer.root, "btn-ship")!
+    expect(pull.y).toBeLessThan(switcher.y)
+    expect(switcher.y).toBeLessThan(ship.y)
+    expect(setup.captureCharFrame()).toContain("Switch Branch…")
+    await click("btn-switch-branch")
+    expect(setup.captureCharFrame()).toContain("Uncommitted changes stay")
+    expect(findById(setup.renderer.root, "source-branch-menu")).toBeTruthy()
+    expect([0, 1, 2].map(optionText).join("\n")).toBe("○ main\n○ other\n○ topic")
+    await setup.mockInput.typeText("topic")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(selectedBranch()).toBe("topic")
+    expect(findById(setup.renderer.root, "source-branch-menu")).toBeUndefined()
+    await click("btn-submit")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("switched feature-switch to topic"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("switched feature-switch to topic")
+    expect(setup.captureCharFrame().split("\n").some((line) => line.includes("○ topic"))).toBe(true)
+    expect(setup.captureCharFrame().split("\n").some((line) => line.includes("○ feature-switch"))).toBe(false)
+    expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("topic")
+    expect(readFileSync(join(tree.path, "topic.txt"), "utf8")).toBe("from topic\n")
+    expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("main")
+
+    writeFileSync(join(tree.path, "topic.txt"), "dirty edit\n")
+    await rightClick("topic")
+    await click("btn-git")
+    await click("btn-switch-branch")
+    await setup.mockInput.typeText("other")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(selectedBranch()).toBe("other")
+    await click("btn-submit")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("would be overwritten"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain("Local changes (topic.txt) would be overwritten")
+    expect(findById(setup.renderer.root, "modal-dialog")).toBeTruthy()
+    expect(readFileSync(join(tree.path, "topic.txt"), "utf8")).toBe("dirty edit\n")
+    expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("topic")
+
+    await click("source-branch")
+    await setup.mockInput.typeText("main")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    await click("btn-submit")
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes("already checked out"); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain('Branch "main" is already checked out in another worktree')
+    expect(readFileSync(join(tree.path, "topic.txt"), "utf8")).toBe("dirty edit\n")
+    expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("topic")
+    expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("main")
+    await click("btn-cancel")
+    expect(findById(setup.renderer.root, "modal-dialog")).toBeUndefined()
+    expect(setup.captureCharFrame().split("\n").some((line) => line.includes("○ topic"))).toBe(true)
+    expect(setup.captureCharFrame().split("\n").some((line) => line.includes("○ other"))).toBe(false)
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})

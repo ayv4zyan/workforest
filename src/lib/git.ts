@@ -247,3 +247,37 @@ export async function pullWorktree(tree: GitWorktree, opts: { timeoutMs?: number
     timeoutMs: opts.timeoutMs ?? PULL_TIMEOUT_MS,
   })
 }
+
+function switchError(detail: string): string {
+  const flat = detail.replace(/\s+/g, " ").trim()
+  return flat.startsWith("Switch failed.") ? flat : `Switch failed. ${flat || "Git refused to switch branches"}`
+}
+
+function overwrittenSwitch(branch: string, detail: string): string | null {
+  if (!/would be overwritten/i.test(detail)) return null
+  const files = [...detail.matchAll(/^\t(.+)$/gm)].map((match) => match[1]!.trim()).filter(Boolean)
+  const listed = files.length === 0 ? "" : ` (${files.slice(0, 3).join(", ")}${files.length > 3 ? ", …" : ""})`
+  const kind = /untracked/i.test(detail) ? "Untracked files" : "Local changes"
+  return `Switch failed. ${kind}${listed} would be overwritten on ${branch}`
+}
+
+export async function switchWorktreeBranch(tree: GitWorktree, branch: string): Promise<void> {
+  const name = branch.trim()
+  if (!name || name.startsWith("-") || git(tree.path, ["check-ref-format", "--branch", name]).exitCode !== 0) {
+    throw new Error(switchError(`Invalid branch name "${name}"`))
+  }
+  const current = gitOk(tree.path, ["branch", "--show-current"]).trim()
+  if (!current) throw new Error(switchError("Detached worktree has no branch to switch"))
+  if (name === current) throw new Error(switchError(`Already on ${name}`))
+  if (!branchExists(tree.path, name)) throw new Error(switchError(`Branch "${name}" does not exist`))
+  if (listWorktrees(tree.path).some((row) => row.branch === name && !samePath(row.path, tree.path))) {
+    throw new Error(switchError(`Branch "${name}" is already checked out in another worktree`))
+  }
+  try {
+    // A plain switch keeps compatible edits and stops when Git would overwrite them.
+    await execOkAsync(["git", "switch", "--no-guess", "--", name], { cwd: tree.path })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(overwrittenSwitch(name, detail) ?? switchError(detail))
+  }
+}

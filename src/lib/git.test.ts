@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { execOk } from "./exec.ts"
 import {
   createWorktree,
+  gitOk,
   isDirty,
   listBranches,
   listWorktrees,
@@ -14,6 +15,7 @@ import {
   removeWorktree,
   renameWorktree,
   samePath,
+  switchWorktreeBranch,
 } from "./git.ts"
 
 const porcelain = `worktree /tmp/repo
@@ -142,6 +144,66 @@ test("rename defaults to branch only even when a sibling folder has the new name
   expect(renamed.branch).toBe("agent/occupied")
   expect(listWorktrees(repo).find((row) => row.path === tree.path)?.branch).toBe("agent/occupied")
   expect(existsSync(join(tree.path, "local.txt"))).toBe(true)
+})
+
+test("switchWorktreeBranch moves one checkout and keeps compatible edits", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  execOk(["git", "checkout", "-b", "topic"], { cwd: repo })
+  writeFileSync(join(repo, "topic.txt"), "from topic\n")
+  execOk(["git", "add", "."], { cwd: repo })
+  execOk(["git", "commit", "-m", "topic"], { cwd: repo })
+  execOk(["git", "checkout", "main"], { cwd: repo })
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-switch", startPoint: "main" })
+  const main = listWorktrees(repo).find((row) => row.isMain)!
+
+  await switchWorktreeBranch(main, "topic")
+  expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("topic")
+  expect(readFileSync(join(repo, "topic.txt"), "utf8")).toBe("from topic\n")
+  await switchWorktreeBranch(main, "main")
+  expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("main")
+  expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("feature-switch")
+
+  writeFileSync(join(tree.path, "notes.txt"), "keep me\n")
+  await switchWorktreeBranch(tree, "topic")
+  expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("topic")
+  expect(readFileSync(join(tree.path, "topic.txt"), "utf8")).toBe("from topic\n")
+  expect(readFileSync(join(tree.path, "notes.txt"), "utf8")).toBe("keep me\n")
+  expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("main")
+  expect(existsSync(join(repo, "notes.txt"))).toBe(false)
+})
+
+test("switchWorktreeBranch refuses a checked-out branch and keeps local changes", async () => {
+  const repo = initRepo()
+  const home = mkdtempSync(join(tmpdir(), "wf-home-"))
+  execOk(["git", "checkout", "-b", "other"], { cwd: repo })
+  writeFileSync(join(repo, "README.md"), "other\n")
+  execOk(["git", "add", "."], { cwd: repo })
+  execOk(["git", "commit", "-m", "other"], { cwd: repo })
+  execOk(["git", "checkout", "main"], { cwd: repo })
+  const tree = createWorktree({ repoPath: repo, home, projectId: "demo", name: "feature-switch", startPoint: "main" })
+  writeFileSync(join(tree.path, "README.md"), "dirty\n")
+
+  await expect(switchWorktreeBranch(tree, "main")).rejects.toThrow('Branch "main" is already checked out in another worktree')
+  await expect(switchWorktreeBranch(tree, "other")).rejects.toThrow("Local changes (README.md) would be overwritten")
+  await expect(switchWorktreeBranch(tree, "feature-switch")).rejects.toThrow("Already on feature-switch")
+  await expect(switchWorktreeBranch(tree, "missing")).rejects.toThrow('Branch "missing" does not exist')
+  await expect(switchWorktreeBranch(tree, "--discard-changes")).rejects.toThrow("Invalid branch")
+  expect(readFileSync(join(tree.path, "README.md"), "utf8")).toBe("dirty\n")
+  expect(gitOk(tree.path, ["branch", "--show-current"]).trim()).toBe("feature-switch")
+  expect(gitOk(repo, ["branch", "--show-current"]).trim()).toBe("main")
+  expect(listBranches(repo)).not.toContain("missing")
+})
+
+test("switchWorktreeBranch refuses a detached worktree", async () => {
+  const repo = initRepo()
+  const dest = mkdtempSync(join(tmpdir(), "wf-detached-"))
+  rmSync(dest, { recursive: true })
+  execOk(["git", "worktree", "add", "--detach", dest], { cwd: repo })
+  const detached = listWorktrees(repo).find((row) => samePath(row.path, dest))!
+  await expect(switchWorktreeBranch(detached, "main")).rejects.toThrow("Detached worktree has no branch to switch")
+  expect(gitOk(dest, ["branch", "--show-current"]).trim()).toBe("")
+  expect(readFileSync(join(dest, "README.md"), "utf8")).toBe("hi\n")
 })
 
 test("pullWorktree fast-forwards that worktree and leaves the main checkout behind", async () => {

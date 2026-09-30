@@ -4,12 +4,12 @@ import { suggestWorktreeName } from "../lib/auto-rename.ts"
 import { loadAutoRename } from "../lib/auto-rename-settings.ts"
 import { setupWorktreeDepsAsync } from "../lib/deps.ts"
 import { displayPath } from "../lib/display-path.ts"
-import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, pullWorktree, removeWorktreeAsync, renameWorktree, worktreeDisplayName } from "../lib/git.ts"
+import { createWorktree, listBranches, listWorktrees, mainWorktreeBranch, pullWorktree, removeWorktreeAsync, renameWorktree, switchWorktreeBranch, worktreeDisplayName } from "../lib/git.ts"
 import { moveWorktreePreferences, setWorktreePinned } from "../lib/config.ts"
 import { movePort } from "../lib/ports.ts"
 import { forgetWorktreeRuntime, moveRunRecord, serversForWorktree, stopServer } from "../lib/servers.ts"
 import type { GitWorktree, Project, ServerRow } from "../lib/types.ts"
-import type { Modal, ModalFocus } from "./modal-model.ts"
+import { isBranchModal, type Modal, type ModalFocus } from "./modal-model.ts"
 import type { TreeRow } from "./workspace.ts"
 
 export function createWorktreeWorkflow(options: {
@@ -94,7 +94,7 @@ export function createWorktreeWorkflow(options: {
 
   function toggleSourceMenu() {
     const current = dialog.modal()
-    if (current?.kind !== "new-tree" && current?.kind !== "ship") return
+    if (!isBranchModal(current)) return
     const branchOpen = !current.branchOpen
     if (branchOpen) dialog.setHighlight(Math.max(0, current.branches.indexOf(current.source)))
     dialog.setModal({ ...current, branchOpen, branchQuery: "" })
@@ -102,8 +102,58 @@ export function createWorktreeWorkflow(options: {
   }
 
   function pickSource(name: string) {
-    dialog.setModal((current) => (current?.kind === "new-tree" || current?.kind === "ship") ? { ...current, source: name, branchOpen: false, error: undefined } : current)
+    dialog.setModal((current) => isBranchModal(current) ? { ...current, source: name, branchOpen: false, error: undefined } : current)
     dialog.setModalFocus("source")
+  }
+
+  function openSwitchBranch() {
+    if (operation.busy()) return
+    const tree = workspace.selectedTree()
+    if (!tree?.branch) {
+      operation.setStatus("Switch failed. Detached worktree has no branch to switch")
+      return
+    }
+    let branches: string[]
+    try {
+      branches = listBranches(tree.path).filter((name) => name !== tree.branch)
+    } catch (error) {
+      operation.setStatus(error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (branches.length === 0) {
+      operation.setStatus("No other local branches")
+      return
+    }
+    dialog.setHighlight(0)
+    dialog.show({ kind: "switch-branch", source: "", branches, branchOpen: true, tree })
+    dialog.setModalFocus("source")
+  }
+
+  async function switchBranch() {
+    const current = dialog.modal()
+    if (operation.busy() || current?.kind !== "switch-branch") return
+    if (!current.source || !current.branches.includes(current.source)) {
+      dialog.setModal({ ...current, error: "Choose a branch" })
+      return
+    }
+    const { tree, source } = current
+    const previous = worktreeDisplayName(tree)
+    operation.setBusy(true)
+    operation.setStatus("switching")
+    try {
+      await switchWorktreeBranch(tree, source)
+      workspace.setSelectedTreePath(tree.path)
+      dialog.setModal(null)
+      await workspace.refresh()
+      operation.setStatus(`switched ${previous} to ${source}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const open = dialog.modal()
+      if (open?.kind === "switch-branch") dialog.setModal({ ...open, error: message, branchOpen: false })
+      operation.setStatus(message)
+    } finally {
+      operation.setBusy(false)
+    }
   }
 
   function openRename() {
@@ -231,6 +281,6 @@ export function createWorktreeWorkflow(options: {
   return {
     renaming, abortRename, copyWorktreePath, retryWorktreeSetup,
     pullingPath, openNewTree, toggleSourceMenu, pickSource, openRename, openManualRename, autoRename, openDelete,
-    pullTree, submit, deleteTree,
+    pullTree, openSwitchBranch, switchBranch, submit, deleteTree,
   }
 }
