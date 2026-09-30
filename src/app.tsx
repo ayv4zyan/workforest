@@ -59,6 +59,7 @@ export function App() {
     pickTree, refresh, loadTreesFor,
   } = createWorkspace({ home: dataDir, queries, onError: setStatus })
   const [busy, setBusy] = createSignal(false)
+  const [mergingPath, setMergingPath] = createSignal<string | null>(null)
   const [modal, setModal] = createSignal<Modal | null>(null)
   const projectDrag = createProjectDrag({
     projects: filteredProjects, selectedId: selectedProjectId, list: () => projectList,
@@ -249,12 +250,18 @@ export function App() {
     const currentMenu = menu()
     if (currentMenu?.pane === "pr") return [
       { id: "btn-merge-pr", label: "Merge", disabled: busy() || currentMenu.state !== "OPEN",
-        onPress: () => { void runOp(`merging PR #${currentMenu.pr.number}`, async () => {
-          const state = await mergePullRequest(currentMenu.cwd, currentMenu.pr)
-          if (state === "MERGED") return `merged PR #${currentMenu.pr.number}`
-          if (state === "OPEN") return `merge requested for PR #${currentMenu.pr.number}; waiting for GitHub checks or merge queue`
-          return `merge command completed for PR #${currentMenu.pr.number}; verify its status on GitHub`
-        }) },
+        onPress: () => {
+          if (busy()) return
+          const path = currentMenu.cwd
+          const pr = currentMenu.pr
+          setMergingPath(path)
+          void runOp(`merging PR #${pr.number}`, async () => {
+            const state = await mergePullRequest(path, pr)
+            if (state === "MERGED") return `merged PR #${pr.number}`
+            if (state === "OPEN") return `merge requested for PR #${pr.number}; waiting for GitHub checks or merge queue`
+            return `merge command completed for PR #${pr.number}; verify its status on GitHub`
+          }).finally(() => setMergingPath((current) => current === path ? null : current))
+        },
       },
     ]
     if (menu()?.pane === "projects") {
@@ -606,7 +613,7 @@ export function App() {
             busy={busy()} blocked={Boolean(modal() || menu())}
             query={queries().trees} project={selectedProject()}
             trees={treeEntries()} selectedIndex={treeIndex()} focusedGroup={focusedGroup()}
-            collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()} shipping={shipping()}
+            collapsedGroups={collapsedGroups()} servers={servers()} pullingPath={pullingPath()} mergingPath={mergingPath()} shipping={shipping()}
             drag={treeDrag}
             on={{
               focus: () => focusPane("trees"), new: () => openNewTree(),
