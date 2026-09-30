@@ -23,6 +23,7 @@ import { createPathWorkflow } from "./ui/path-workflow.ts"
 import { loadConfig, setProjectPaneWidth } from "./lib/config.ts"
 import { workforestHome } from "./lib/home.ts"
 import { mergePullRequest } from "./lib/branch-metadata.ts"
+import type { ServerRow } from "./lib/types.ts"
 
 type FocusRow = "header" | "panes" | "pane-actions"
 type Action = MenuAction
@@ -266,6 +267,7 @@ export function App() {
     const tree = selectedTree()
     const linked = Boolean(tree && !tree.isMain) && !busy()
     const running = activeServers().length > 0
+    const openable = openableServers()
     return [
       { id: "btn-rename", label: "Rename", submenu: "rename", trailingLabel: "›", disabled: !linked, onPress: () => openSubmenu("rename") },
       { id: tree && isPinned(tree.path) ? "btn-unpin" : "btn-pin", label: tree && isPinned(tree.path) ? "Unpin" : "Pin", disabled: !tree || busy(),
@@ -273,6 +275,7 @@ export function App() {
       running
         ? { id: "btn-menu-stop", label: "Stop", variant: "danger", disabled: !tree || busy(), onPress: toggleServer }
         : { id: "btn-menu-run", label: "Run", variant: "accent", disabled: !tree || busy(), onPress: toggleServer },
+      ...(openable.length === 0 ? [] : [openAction(openable)]),
       { id: "btn-git", label: "Git", submenu: "git", trailingLabel: "›", disabled: !tree?.branch || busy(), onPress: () => openSubmenu("git") },
       { id: "btn-copy-path", label: "Copy path", disabled: !tree, onPress: copyWorktreePath },
       { id: "btn-create-tree", label: "Create worktree", disabled: !tree || busy(), onPress: () => openNewTree(tree?.branch ?? undefined) },
@@ -299,12 +302,37 @@ export function App() {
     openContextMenu({ pane: target, x: x ?? (list?.x ?? 0) + (list?.width ?? 0), y: y ?? (list?.y ?? 4) + row, submenu: null })
   }
 
+  function openableServers(): ServerRow[] {
+    return activeServers().filter((row) => row.state === "running")
+  }
+
+  function openAction(rows: ServerRow[]): Action {
+    if (rows.length === 1) {
+      const port = rows[0]!.port
+      return { id: "btn-open", label: "Open", disabled: busy(), onPress: () => openServer(port) }
+    }
+    return { id: "btn-open", label: "Open", submenu: "open", trailingLabel: "›", disabled: busy(), onPress: () => openSubmenu("open") }
+  }
+
+  function openServer(port: number) {
+    void execOkAsync([process.platform === "darwin" ? "open" : "xdg-open", `http://localhost:${port}`], { timeoutMs: 10000 })
+      .then(() => setStatus(`opened :${port}`))
+      .catch((error) => setStatus(String(error)))
+  }
+
   function submenuActions(): Action[] {
-    if (menu()?.submenu === "git") return [
+    const kind = menu()?.submenu
+    if (kind === "git") return [
       { id: "btn-pull", label: "Pull", disabled: busy(), onPress: pullTree },
       { id: "btn-switch-branch", label: "Switch Branch…", disabled: busy(), onPress: openSwitchBranch },
       { id: "btn-ship", label: "Ship", disabled: busy(), onPress: openShip },
     ]
+    if (kind === "open") return openableServers().map((row) => ({
+      id: `btn-open-${row.port}`,
+      label: `:${row.port}`,
+      disabled: busy(),
+      onPress: () => openServer(row.port),
+    }))
     return [
       { id: "btn-manual-rename", label: "Manual", onPress: openManualRename },
       { id: "btn-auto-rename", label: "Auto", disabled: !selectedTree()?.branch, onPress: () => void autoRename() },

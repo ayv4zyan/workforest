@@ -2289,3 +2289,116 @@ test.serial("Git submenu switches the selected worktree and keeps local changes 
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test.serial("worktree menu opens one running server directly and lists several by port", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-open-ui-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  const bin = join(root, "bin")
+  const opened = join(root, "opened.txt")
+  mkdirSync(repo)
+  mkdirSync(bin)
+  process.env.WORKFOREST_HOME = home
+  const opener = join(bin, process.platform === "darwin" ? "open" : "xdg-open")
+  writeFileSync(opener, `#!${process.execPath}\nawait Bun.write(${JSON.stringify(opened)}, process.argv[2])\n`)
+  chmodSync(opener, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["config", "user.email", "wf@test"])
+  gitOk(repo, ["config", "user.name", "wf"])
+  gitOk(repo, ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  const project = setProjectStartCommand(home, addProject(home, repo).id, "bun server.ts")
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "feature-open" })
+  writeFileSync(join(tree.path, "server.ts"), 'Bun.serve({ port: Number(process.env.PORT), fetch: () => new Response("hello") })')
+  const firstProbe = Bun.serve({ port: 0, fetch: () => new Response("a") })
+  const secondProbe = Bun.serve({ port: 0, fetch: () => new Response("b") })
+  const port = firstProbe.port!
+  const secondPort = secondProbe.port!
+  firstProbe.stop(true)
+  secondProbe.stop(true)
+  const record = startServer({ home, project, worktree: tree, usedPorts: [], port })
+  let second: ReturnType<typeof Bun.spawn> | undefined
+  const setup = await testRender(() => <App />, { width: 110, height: 28 })
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const rightClick = async (label: string) => {
+    const at = findText(setup.captureCharFrame(), label)
+    await setup.mockMouse.click(at.x, at.y, 2)
+    await paint(setup)
+  }
+  const expectOpened = async (target: number) => {
+    for (let i = 0; i < 30 && !setup.captureCharFrame().includes(`opened :${target}`); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain(`opened :${target}`)
+    expect(readFileSync(opened, "utf8")).toBe(`http://localhost:${target}`)
+  }
+  try {
+    for (let i = 0; i < 40 && !setup.captureCharFrame().includes(`Running · :${port}`); i++) await paint(setup)
+    expect(setup.captureCharFrame()).toContain(`Running · :${port}`)
+
+    await rightClick("(main)")
+    expect(findById(setup.renderer.root, "btn-open")).toBeUndefined()
+    await setup.mockMouse.click(0, 0)
+    await paint(setup)
+
+    await rightClick("feature-open")
+    const stop = findById(setup.renderer.root, "btn-menu-stop")!
+    const open = findById(setup.renderer.root, "btn-open")!
+    const git = findById(setup.renderer.root, "btn-git")!
+    expect(stop.y).toBeLessThan(open.y)
+    expect(open.y).toBeLessThan(git.y)
+    await setup.mockMouse.moveTo(open.x + 1, open.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "open-submenu")).toBeUndefined()
+    await click("btn-open")
+    expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
+    await expectOpened(port)
+
+    rmSync(opened, { force: true })
+    second = Bun.spawn([process.execPath, "server.ts"], {
+      cwd: tree.path, env: { ...process.env, PORT: String(secondPort) }, stdout: "ignore", stderr: "ignore",
+    })
+    for (let i = 0; i < 30; i++) {
+      await Bun.sleep(50)
+      await click("btn-refresh")
+      if (setup.captureCharFrame().includes("2 servers")) break
+    }
+    expect(setup.captureCharFrame()).toContain("2 servers")
+    await rightClick("feature-open")
+    expect(findById(setup.renderer.root, "open-submenu")).toBeUndefined()
+    await click("btn-open")
+    expect(findById(setup.renderer.root, "open-submenu")).toBeTruthy()
+    expect(existsSync(opened)).toBe(false)
+    const low = Math.min(port, secondPort)
+    const high = Math.max(port, secondPort)
+    const lowButton = findById(setup.renderer.root, `btn-open-${low}`)!
+    const highButton = findById(setup.renderer.root, `btn-open-${high}`)!
+    expect(lowButton.y).toBeLessThan(highButton.y)
+    expect(setup.captureCharFrame()).toContain(`:${low}`)
+    expect(setup.captureCharFrame()).toContain(`:${high}`)
+    await click(`btn-open-${high}`)
+    expect(findById(setup.renderer.root, "context-menu")).toBeUndefined()
+    await expectOpened(high)
+
+    rmSync(opened, { force: true })
+    await rightClick("feature-open")
+    const openAgain = findById(setup.renderer.root, "btn-open")!
+    await setup.mockMouse.moveTo(openAgain.x + 1, openAgain.y)
+    await paint(setup)
+    expect(findById(setup.renderer.root, "open-submenu")).toBeTruthy()
+    await click(`btn-open-${low}`)
+    await expectOpened(low)
+  } finally {
+    try { process.kill(record.pid) } catch { /* already stopped */ }
+    second?.kill()
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 20000)
