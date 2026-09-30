@@ -7,9 +7,9 @@ export type ModalFocus = "input" | "source" | "rename-folder" | "server" | "stop
 export type Modal =
   | { kind: "settings"; section: "autoRename" | "ship"; provider: "codex"; model: string; reasoning: string; prompt: string; error?: string }
   | { kind: "auto-rename" }
-  | { kind: "ship"; source: string; branches: string[]; branchOpen?: boolean; evidence?: string; error?: string; tree: GitWorktree }
+  | { kind: "ship"; source: string; branches: string[]; branchOpen?: boolean; branchQuery?: string; evidence?: string; error?: string; tree: GitWorktree }
   | { kind: "add-project"; value: string; error?: string }
-  | { kind: "new-tree"; value: string; source: string; branches: string[]; branchOpen?: boolean; error?: string }
+  | { kind: "new-tree"; value: string; source: string; branches: string[]; branchOpen?: boolean; branchQuery?: string; error?: string }
   | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
@@ -26,6 +26,11 @@ export function modalFocusables(current: Modal): ModalFocus[] {
   if (current.kind === "new-tree") return ["input", "source", "submit", "cancel"]
   if (current.kind === "stop-picker") return ["server", "submit", "stop-all", "cancel"]
   return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
+}
+
+export function matchingBranches(current: Extract<Modal, { kind: "new-tree" | "ship" }>): string[] {
+  const query = current.branchQuery?.trim().toLowerCase() ?? ""
+  return current.branches.filter((branch) => branch.toLowerCase().includes(query))
 }
 
 export function modalArrowFocus(current: Modal, focus: ModalFocus, name: string): ModalFocus | null {

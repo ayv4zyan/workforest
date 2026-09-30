@@ -2,7 +2,7 @@ import type { InputRenderable, KeyEvent } from "@opentui/core"
 import type { Accessor, Setter } from "solid-js"
 import { settingsFocusOrder, type SettingsField } from "./settings-modal.tsx"
 import { settingsOptions } from "./settings-workflow.ts"
-import type { Modal, ModalFocus } from "./modal-model.ts"
+import { matchingBranches, type Modal, type ModalFocus } from "./modal-model.ts"
 import type { PathSuggestion } from "../lib/path-completion.ts"
 
 type Context = {
@@ -132,15 +132,21 @@ export function handleModalKey(key: KeyEvent, context: Context) {
       }
       const openTreeModal = modal()
       if ((openTreeModal?.kind === "new-tree" || openTreeModal?.kind === "ship") && openTreeModal.branchOpen) {
-        const branches = openTreeModal.branches
-        key.preventDefault()
+        const branches = matchingBranches(openTreeModal)
         if (key.name === "escape") {
+          key.preventDefault()
           setModal({ ...openTreeModal, branchOpen: false })
+        } else if (key.name === "tab") {
+          key.preventDefault()
+          setModal({ ...openTreeModal, branchOpen: false })
+          cycleModalFocus(key.shift ? -1 : 1)
         } else if (key.name === "up" || key.name === "down") {
+          key.preventDefault()
           const delta = key.name === "up" ? -1 : 1
           const count = Math.max(1, branches.length)
           setSettingsHighlight((settingsHighlight() + delta + count) % count)
         } else if (["return", "enter"].includes(key.name)) {
+          key.preventDefault()
           const value = branches[settingsHighlight()]
           if (value) pickSource(value)
         }

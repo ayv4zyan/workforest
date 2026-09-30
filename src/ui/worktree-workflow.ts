@@ -97,7 +97,7 @@ export function createWorktreeWorkflow(options: {
     if (current?.kind !== "new-tree" && current?.kind !== "ship") return
     const branchOpen = !current.branchOpen
     if (branchOpen) dialog.setHighlight(Math.max(0, current.branches.indexOf(current.source)))
-    dialog.setModal({ ...current, branchOpen })
+    dialog.setModal({ ...current, branchOpen, branchQuery: "" })
     dialog.setModalFocus("source")
   }
 

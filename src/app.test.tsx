@@ -4,7 +4,7 @@ import { realpathSync, chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, wr
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { testRender } from "@opentui/solid"
-import { BoxRenderable, RGBA, TextAttributes, TextRenderable, type Renderable } from "@opentui/core"
+import { BoxRenderable, RGBA, TextAttributes, TextRenderable, type InputRenderable, type Renderable } from "@opentui/core"
 import { addProject, loadConfig, saveConfig, setProjectStartCommand, setWorktreePinned } from "./lib/config.ts"
 import { createWorktree, gitOk, listWorktrees } from "./lib/git.ts"
 import { collectServers, startServer, stopServer, loadRunRecords } from "./lib/servers.ts"
@@ -1885,6 +1885,101 @@ test.serial("Ship settings keep independent drafts when switching sidebar sectio
     setup.renderer.destroy()
     process.env.WORKFOREST_HOME = oldHome
     rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test.serial("Ship branch picker focuses search, filters results, and selects with Enter or mouse", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-branch-search-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const home = join(root, "home"), repo = join(root, "repo")
+  mkdirSync(repo)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "init"])
+  gitOk(repo, ["branch", "develop"])
+  for (let i = 0; i < 12; i++) gitOk(repo, ["branch", `branch-${i}`])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "search-feature", startPoint: "develop" })
+  const setup = await testRender(() => <App />, { width: 120, height: 36 })
+  const node = (id: string) => findById(setup.renderer.root, id)!
+  const search = () => node("source-branch-search") as InputRenderable
+  const selected = () => (node("source-branch").getChildren()[0] as TextRenderable).plainText
+  const click = async (id: string) => {
+    const target = node(id)
+    await setup.mockMouse.click(target.x + 1, target.y + Math.floor(target.height / 2))
+    await paint(setup)
+  }
+  try {
+    await paint(setup)
+    const row = node(`tree-row-${tree.path}`)
+    await setup.mockMouse.click(row.x + 1, row.y, 2)
+    await paint(setup)
+    const git = node("btn-git")
+    await setup.mockMouse.moveTo(git.x + 1, git.y)
+    await paint(setup)
+    await click("btn-ship")
+    expect(selected()).toBe("develop")
+    await click("source-branch")
+    expect(search().focused).toBe(true)
+    expect(setup.captureCharFrame()).toContain("● develop")
+
+    // Typing starts a fresh highlight even when the suggested target was far down the list.
+    await setup.mockInput.typeText("BRANCH-1")
+    await paint(setup)
+    expect(search().value).toBe("BRANCH-1")
+    expect(setup.captureCharFrame()).toContain("○ branch-1")
+    expect(setup.captureCharFrame()).toContain("○ branch-10")
+    expect(setup.captureCharFrame()).toContain("○ branch-11")
+    expect(setup.captureCharFrame()).not.toContain("○ branch-0")
+    expect(setup.captureCharFrame()).not.toContain("● develop")
+    setup.mockInput.pressArrow("up")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(selected()).toBe("branch-11")
+    expect(node("source-branch-menu")).toBeUndefined()
+    expect(node("modal-dialog")).toBeTruthy()
+
+    // Reopening by keyboard clears the old query and focuses search again.
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(search().value).toBe("")
+    expect(search().focused).toBe(true)
+    await setup.mockInput.typeText("no-match")
+    await paint(setup)
+    expect(setup.captureCharFrame()).toContain("No matching branches")
+    setup.mockInput.pressArrow("down")
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(selected()).toBe("branch-11")
+    expect(node("source-branch-menu")).toBeTruthy()
+    for (let i = 0; i < "no-match".length; i++) setup.mockInput.pressBackspace()
+    await paint(setup)
+    expect(search().value).toBe("")
+    expect(setup.captureCharFrame()).toContain("○ branch-0")
+    await setup.mockInput.typeText("MAIN")
+    await paint(setup)
+    setup.mockInput.pressEnter()
+    await paint(setup)
+    expect(selected()).toBe("main")
+
+    await click("source-branch")
+    await setup.mockInput.typeText("develop")
+    await paint(setup)
+    setup.mockInput.pressEscape()
+    await paint(setup)
+    expect(node("source-branch-menu")).toBeUndefined()
+    expect(selected()).toBe("main")
+    await click("source-branch")
+    await setup.mockInput.typeText("develop")
+    await paint(setup)
+    await click("source-option-0")
+    expect(selected()).toBe("develop")
+    expect(node("source-branch-menu")).toBeUndefined()
+    expect(gitOk(repo, ["config", "--get", "branch.search-feature.workforest-source"]).trim()).toBe("develop")
+  } finally {
+    setup.renderer.destroy()
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
   }
 })
 

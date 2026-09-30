@@ -5,7 +5,7 @@ import type { Project, ServerRow } from "../lib/types.ts"
 import { theme } from "../theme.ts"
 import { ActionButton } from "./button.tsx"
 import { SettingsForm, type SettingsFocus } from "./settings-modal.tsx"
-import { modalBody, modalError, modalPlaceholder, modalSize, modalTitle, modalValue, type Modal, type ModalFocus } from "./modal-model.ts"
+import { matchingBranches, modalBody, modalError, modalPlaceholder, modalSize, modalTitle, modalValue, type Modal, type ModalFocus } from "./modal-model.ts"
 import type { TreeRow } from "./workspace.ts"
 import type { createSettingsWorkflow } from "./settings-workflow.ts"
 import type { createPathWorkflow } from "./path-workflow.ts"
@@ -298,9 +298,10 @@ export function ModalLayer(props: ModalLayerProps) {
                 ) : null}
                 <Show when={current().kind === "new-tree" || current().kind === "ship"}>
                   {(() => {
-                    const draft = current() as Extract<Modal, { kind: "new-tree" | "ship" }>
-                    const open = () => Boolean(draft.branchOpen)
+                    const draft = () => current() as Extract<Modal, { kind: "new-tree" | "ship" }>
+                    const open = () => Boolean(draft().branchOpen)
                     const active = () => modalFocus() === "source" || open()
+                    const branches = createMemo(() => matchingBranches(draft()))
                     const branchOffset = createMemo((offset: number) => {
                       const highlighted = settingsHighlight()
                       if (highlighted < offset) return highlighted
@@ -309,11 +310,11 @@ export function ModalLayer(props: ModalLayerProps) {
                     }, 0)
                     const visibleBranches = createMemo(() => {
                       const offset = branchOffset()
-                      return draft.branches.slice(offset, offset + 8).map((name, index) => ({ name, index: offset + index }))
+                      return branches().slice(offset, offset + 8).map((name, index) => ({ name, index: offset + index }))
                     })
                     return (
                       <box flexGrow={1} flexShrink={0} flexDirection="column">
-                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>{draft.kind === "ship" ? "PR target branch" : "Source branch"}</text>
+                        <text height={1} fg={active() ? theme.accent : theme.muted} selectable={false}>{draft().kind === "ship" ? "PR target branch" : "Source branch"}</text>
                         <box height={3} flexShrink={0}>
                           <box
                             id="source-branch"
@@ -336,7 +337,7 @@ export function ModalLayer(props: ModalLayerProps) {
                               toggleSourceMenu()
                             }}
                           >
-                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft.source || "Choose a branch"}</text>
+                            <text fg={theme.text} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{draft().source || "Choose a branch"}</text>
                             <text fg={theme.muted} selectable={false} onMouseOver={pointAt} onMouseOut={pointAway}>{open() ? "▴" : "▾"}</text>
                           </box>
                         </box>
@@ -347,15 +348,16 @@ export function ModalLayer(props: ModalLayerProps) {
                             top={4}
                             left={0}
                             width="100%"
-                            height={Math.min(draft.branches.length + 2, 10)}
+                            height={Math.min(Math.max(1, branches().length) + 3, 11)}
+                            flexDirection="column"
                             zIndex={40}
-                            title={draft.branches.length > 8 ? "↑↓ / scroll" : undefined}
+                            title="↑↓ choose · Enter select"
                             border
                             borderColor={theme.accent}
                             onMouseScroll={(event) => {
                               event.stopPropagation()
                               const delta = event.scroll?.direction === "up" ? -1 : 1
-                              setSettingsHighlight(Math.max(0, Math.min(draft.branches.length - 1, settingsHighlight() + delta)))
+                              setSettingsHighlight(Math.max(0, Math.min(branches().length - 1, settingsHighlight() + delta)))
                             }}
                             backgroundColor={theme.header}
                             onMouseDown={(event) => {
@@ -363,9 +365,34 @@ export function ModalLayer(props: ModalLayerProps) {
                               claimSourceClick()
                             }}
                           >
+                            <input
+                              id="source-branch-search"
+                              focused={open()}
+                              value={draft().branchQuery ?? ""}
+                              placeholder="Search branches…"
+                              flexShrink={0}
+                              backgroundColor={theme.panel}
+                              focusedBackgroundColor="#21262d"
+                              textColor={theme.text}
+                              cursorColor={theme.accent}
+                              onMouseDown={(event) => {
+                                event.stopPropagation()
+                                claimSourceClick()
+                                setModalFocus("source")
+                              }}
+                              onInput={(branchQuery) => {
+                                const now = modal()
+                                if (now?.kind !== "new-tree" && now?.kind !== "ship") return
+                                setSettingsHighlight(0)
+                                setModal({ ...now, branchQuery })
+                              }}
+                            />
+                            <Show when={branches().length === 0}>
+                              <text height={1} fg={theme.muted} selectable={false}>No matching branches</text>
+                            </Show>
                             <For each={visibleBranches()}>{({ name, index }) => {
                               const hot = () => settingsHighlight() === index
-                              const selected = () => name === draft.source
+                              const selected = () => name === draft().source
                               return (
                                 <box
                                   id={`source-option-${index}`}
