@@ -93,7 +93,7 @@ export function App() {
   const {
     renaming, abortRename, copyWorktreePath, retryWorktreeSetup, pullingPath,
     openNewTree, toggleSourceMenu, pickSource, openRename, openManualRename,
-    autoRename, openDelete, pullTree, submit: submitWorktree, deleteTree,
+    autoRename, openDelete, pullTree, openSwitchBranch, switchBranch, submit: submitWorktree, deleteTree,
   } = createWorktreeWorkflow({
     home: dataDir, renderer,
     workspace: { selectedProject, selectedTree, selectProject, setSelectedTreePath,
@@ -302,6 +302,7 @@ export function App() {
   function submenuActions(): Action[] {
     if (menu()?.submenu === "git") return [
       { id: "btn-pull", label: "Pull", disabled: busy(), onPress: pullTree },
+      { id: "btn-switch-branch", label: "Switch Branch…", disabled: busy(), onPress: openSwitchBranch },
       { id: "btn-ship", label: "Ship", disabled: busy(), onPress: openShip },
     ]
     return [
@@ -478,6 +479,10 @@ export function App() {
     if (!current) return
     if (current.kind === "ship") {
       void startShip()
+      return
+    }
+    if (current.kind === "switch-branch") {
+      void switchBranch()
       return
     }
     if (current.kind === "unregister") {

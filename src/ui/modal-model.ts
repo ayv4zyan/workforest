@@ -10,6 +10,7 @@ export type Modal =
   | { kind: "ship"; source: string; branches: string[]; branchOpen?: boolean; branchQuery?: string; evidence?: string; error?: string; tree: GitWorktree }
   | { kind: "add-project"; value: string; error?: string }
   | { kind: "new-tree"; value: string; source: string; branches: string[]; branchOpen?: boolean; branchQuery?: string; error?: string }
+  | { kind: "switch-branch"; source: string; branches: string[]; branchOpen?: boolean; branchQuery?: string; error?: string; tree: GitWorktree }
   | { kind: "rename"; value: string; renameFolder?: boolean; error?: string; target?: { project: Project; tree: GitWorktree } }
   | { kind: "delete"; error?: string }
   | { kind: "unregister" }
@@ -22,20 +23,26 @@ export type Modal =
 export function modalFocusables(current: Modal): ModalFocus[] {
   if (current.kind === "settings") return settingsFocusOrder(Boolean(current.error))
   if (current.kind === "rename") return ["input", "rename-folder", "submit", "cancel"]
-  if (current.kind === "ship") return ["source", "submit", "cancel"]
+  if (current.kind === "ship" || current.kind === "switch-branch") return ["source", "submit", "cancel"]
   if (current.kind === "new-tree") return ["input", "source", "submit", "cancel"]
   if (current.kind === "stop-picker") return ["server", "submit", "stop-all", "cancel"]
   return "value" in current ? ["input", "submit", "cancel"] : ["submit", "cancel"]
 }
 
-export function matchingBranches(current: Extract<Modal, { kind: "new-tree" | "ship" }>): string[] {
+export type BranchModal = Extract<Modal, { kind: "new-tree" | "ship" | "switch-branch" }>
+
+export function isBranchModal(current: Modal | null | undefined): current is BranchModal {
+  return current?.kind === "new-tree" || current?.kind === "ship" || current?.kind === "switch-branch"
+}
+
+export function matchingBranches(current: BranchModal): string[] {
   const query = current.branchQuery?.trim().toLowerCase() ?? ""
   return current.branches.filter((branch) => branch.toLowerCase().includes(query))
 }
 
 export function modalArrowFocus(current: Modal, focus: ModalFocus, name: string): ModalFocus | null {
   const hasInput = "value" in current
-  if ((current.kind === "rename" || current.kind === "new-tree" || current.kind === "ship") && (name === "up" || name === "down")) {
+  if ((current.kind === "rename" || isBranchModal(current)) && (name === "up" || name === "down")) {
     const items = modalFocusables(current)
     const index = Math.max(0, items.indexOf(focus))
     return items[(index + (name === "up" ? -1 : 1) + items.length) % items.length]!
@@ -56,6 +63,7 @@ export function modalTitle(current: Modal): string {
     case "ship": return "Ship"
     case "add-project": return "add project"
     case "new-tree": return "new worktree"
+    case "switch-branch": return "switch branch"
     case "rename": return "rename worktree"
     case "delete": return "delete worktree"
     case "unregister": return "remove project from list"
@@ -74,6 +82,7 @@ export function modalBody(current: Modal, selectedProject: Project | null, selec
     case "add-project": return "Path to the main checkout"
     case "ship": return `Commit changes, push, and create a PR. Fixes get separate commits. ${current.evidence === "inferred" ? "Target inferred from history; check it." : current.evidence ? `Source: ${current.evidence}.` : "Choose the target branch."}`
     case "new-tree": return "Name is the new directory and branch. Source is the branch it starts from."
+    case "switch-branch": return "Pick a local branch. Uncommitted changes stay; the switch stops if Git would overwrite them."
     case "rename": return "Renames the branch. Renaming the folder changes its path; apps using this worktree may need to reopen it."
     case "delete": {
       const extra = selectedTree?.dirty ? " Working tree is dirty; this force-deletes." : ""
@@ -114,7 +123,7 @@ export function modalSize(current: Modal, terminalWidth: number, terminalHeight:
     ? Math.floor(terminalHeight * 0.7)
     : current.kind === "stop-picker" ? Math.min(22, 14 + current.rows.length)
     : current.kind === "settings" ? terminalHeight - 4
-    : current.kind === "add-project" ? 12 + pathListHeight : (current.kind === "new-tree" || current.kind === "ship") ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
+    : current.kind === "add-project" ? 12 + pathListHeight : isBranchModal(current) ? 20 : current.kind === "rename" ? 16 : "value" in current ? 14 : 12
   const width = Math.max(1, Math.min(preferredWidth, terminalWidth - 4))
   const height = Math.max(1, Math.min(preferredHeight, terminalHeight - 2))
   return {
