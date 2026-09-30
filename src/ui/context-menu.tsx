@@ -5,17 +5,19 @@ import type { PullRequest, PullRequestState } from "../lib/branch-metadata.ts"
 import { ActionButton } from "./button.tsx"
 import type { Pane } from "./workspace.ts"
 
+export type SubmenuKind = "rename" | "git" | "open"
+
 export type MenuAction = {
   id: string
   label: string
-  submenu?: "rename" | "git"
+  submenu?: SubmenuKind
   trailingLabel?: string
   variant?: "accent" | "danger"
   disabled?: boolean
   onPress: () => void
 }
 export type RowMenu =
-  | { pane: Pane; x: number; y: number; submenu: "rename" | "git" | null }
+  | { pane: Pane; x: number; y: number; submenu: SubmenuKind | null }
   | { pane: "pr"; x: number; y: number; submenu: null; pr: PullRequest; cwd: string; state: PullRequestState | null }
 
 export function createContextMenu(options: {
@@ -33,7 +35,7 @@ export function createContextMenu(options: {
     setMenu(next)
   }
 
-  function openSubmenu(kind: "rename" | "git") {
+  function openSubmenu(kind: SubmenuKind) {
     const current = menu()
     const action = options.actions().find((action) => action.submenu === kind)
     if (!current || current.pane !== "trees" || !action || action.disabled) return
