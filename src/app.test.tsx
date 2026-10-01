@@ -1327,6 +1327,173 @@ process.exit(child.exitCode ?? 1)
   }
 })
 
+test.serial("merge shows a spinner beside the PR number until it finishes or fails", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-merge-spin-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const home = join(root, "home")
+  const repo = join(root, "repo")
+  const bin = join(root, "bin")
+  const stateFile = join(root, "pr-state.txt")
+  const modeFile = join(root, "merge-mode.txt")
+  const mergedFile = join(root, "merged.json")
+  mkdirSync(repo)
+  mkdirSync(bin)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "merge-feature" })
+  const pr = { number: 450, url: "https://github.com/test/demo/pull/450", base: "main", state: "OPEN" }
+  gitOk(repo, ["config", "--local", "branch.merge-feature.workforest-pr", JSON.stringify(pr)])
+  writeFileSync(stateFile, "OPEN")
+  writeFileSync(modeFile, "fail")
+  const gh = join(bin, "gh")
+  writeFileSync(gh, `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[1] === "view") console.log(JSON.stringify({ url: args[2], state: (await Bun.file(${JSON.stringify(stateFile)}).text()).trim() }))
+else if (args[1] === "merge") {
+  await Bun.sleep(800)
+  if ((await Bun.file(${JSON.stringify(modeFile)}).text()).trim() === "fail") {
+    console.error("merge failed: conflict")
+    process.exit(1)
+  }
+  await Bun.write(${JSON.stringify(stateFile)}, "MERGED")
+  await Bun.write(${JSON.stringify(mergedFile)}, JSON.stringify(args))
+} else process.exit(0)
+`)
+  chmodSync(gh, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 100, height: 24 })
+  const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+  const nameLine = () => setup.captureCharFrame().split("\n").find((line) => line.includes("○ merge-feature")) ?? ""
+  const mainLine = () => setup.captureCharFrame().split("\n").find((line) => line.includes("(main)")) ?? ""
+  const spinnerOn = (line: string) => spinnerFrames.find((frame) => line.includes(frame))
+  const click = async (id: string) => {
+    const node = findById(setup.renderer.root, id)!
+    expect(node).toBeTruthy()
+    await setup.mockMouse.click(node.x + 1, node.y + Math.floor(node.height / 2))
+    await paint(setup)
+  }
+  const openMerge = async () => {
+    const link = findById(setup.renderer.root, "pr-link-450")!
+    await setup.mockMouse.click(link.x + 2, link.y, 2)
+    await paint(setup)
+    await click("btn-merge-pr")
+  }
+  try {
+    for (let i = 0; i < 40 && !findById(setup.renderer.root, "pr-link-450"); i++) await paint(setup)
+    expect(findById(setup.renderer.root, "pr-link-450")).toBeTruthy()
+    await openMerge()
+    expect(nameLine()).toMatch(/merge-feature #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
+    expect(spinnerOn(mainLine())).toBeUndefined()
+    expect(mainLine()).not.toContain("merging")
+    expect(setup.captureCharFrame()).toContain("merging PR #450")
+    const row = findById(setup.renderer.root, `tree-row-${tree.path}`) as BoxRenderable
+    const spinner = findById(setup.renderer.root, "merge-spinner") as TextRenderable
+    const badge = findById(setup.renderer.root, "pr-link-450") as BoxRenderable
+    expect(spinner.y).toBe(row.y)
+    expect(spinner.height).toBe(1)
+    expect(spinner.x).toBeGreaterThanOrEqual(row.x)
+    expect(spinner.plainText).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging$/)
+    expect(badge.x + badge.width).toBe(spinner.x)
+    expect(spinner.x + spinner.width).toBeLessThanOrEqual(row.x + row.width)
+    expect(badge.y).toBe(row.y)
+    expect(badge.x + badge.width).toBeLessThanOrEqual(row.x + row.width)
+    const badgeLabel = badge.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)!
+    expect(spinner.fg.equals(badgeLabel.fg)).toBe(true)
+    const first = spinnerOn(nameLine())
+    let next = first
+    for (let i = 0; i < 8 && next === first; i++) {
+      await Bun.sleep(80)
+      await paint(setup)
+      next = spinnerOn(nameLine())
+    }
+    expect(next).toBeTruthy()
+    expect(next).not.toBe(first)
+    for (let i = 0; i < 50 && !setup.captureCharFrame().includes("merge failed: conflict"); i++) {
+      await Bun.sleep(50)
+      await paint(setup)
+    }
+    expect(setup.captureCharFrame()).toContain("merge failed: conflict")
+    expect(spinnerOn(nameLine())).toBeUndefined()
+    expect(nameLine()).not.toContain("merging")
+    expect(findById(setup.renderer.root, "merge-spinner")).toBeUndefined()
+
+    writeFileSync(modeFile, "ok")
+    await openMerge()
+    expect(nameLine()).toMatch(/merge-feature #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
+    for (let i = 0; i < 50 && !setup.captureCharFrame().includes("merged PR #450"); i++) {
+      await Bun.sleep(50)
+      await paint(setup)
+    }
+    expect(setup.captureCharFrame()).toContain("merged PR #450")
+    expect(spinnerOn(nameLine())).toBeUndefined()
+    expect(nameLine()).not.toContain("merging")
+    expect(findById(setup.renderer.root, "merge-spinner")).toBeUndefined()
+    expect(JSON.parse(await Bun.file(mergedFile).text())).toEqual(["pr", "merge", pr.url, "--merge"])
+  } finally {
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+}, 20000)
+
+test.serial("merge spinner stays beside the PR badge when the worktree pane is narrow", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-merge-narrow-")))
+  const oldHome = process.env.WORKFOREST_HOME
+  const oldPath = process.env.PATH
+  const home = join(root, "home"), repo = join(root, "repo"), bin = join(root, "bin")
+  const stateFile = join(root, "pr-state.txt"), hold = join(root, "hold")
+  mkdirSync(repo)
+  mkdirSync(bin)
+  process.env.WORKFOREST_HOME = home
+  gitOk(repo, ["init", "-b", "main"])
+  gitOk(repo, ["-c", "user.name=wf", "-c", "user.email=wf@test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "initial"])
+  const project = addProject(home, repo)
+  const tree = createWorktree({ repoPath: repo, home, projectId: project.id, name: "merge-feature" })
+  gitOk(repo, ["config", "--local", "branch.merge-feature.workforest-pr", JSON.stringify({ number: 450, url: "https://github.com/test/demo/pull/450", base: "main", state: "OPEN" })])
+  writeFileSync(stateFile, "OPEN")
+  writeFileSync(hold, "")
+  const gh = join(bin, "gh")
+  writeFileSync(gh, `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[1] === "view") console.log(JSON.stringify({ url: args[2], state: (await Bun.file(${JSON.stringify(stateFile)}).text()).trim() }))
+else if (args[1] === "merge") { while (await Bun.file(${JSON.stringify(hold)}).exists()) await Bun.sleep(30) }
+else process.exit(0)
+`)
+  chmodSync(gh, 0o755)
+  process.env.PATH = `${bin}:${oldPath}`
+  const setup = await testRender(() => <App />, { width: 58, height: 20 })
+  try {
+    for (let i = 0; i < 40 && !findById(setup.renderer.root, "pr-link-450"); i++) await paint(setup)
+    const link = findById(setup.renderer.root, "pr-link-450")!
+    await setup.mockMouse.click(link.x + 2, link.y, 2)
+    await paint(setup)
+    const merge = findById(setup.renderer.root, "btn-merge-pr")!
+    await setup.mockMouse.click(merge.x + 1, merge.y)
+    await paint(setup)
+    const line = setup.captureCharFrame().split("\n").find((row) => /#450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/.test(row)) ?? ""
+    expect(line).toMatch(/\.\.\..* #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
+    const row = findById(setup.renderer.root, `tree-row-${tree.path}`) as BoxRenderable
+    const spinner = findById(setup.renderer.root, "merge-spinner") as TextRenderable
+    const badge = findById(setup.renderer.root, "pr-link-450") as BoxRenderable
+    expect(spinner.plainText).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging$/)
+    expect(badge.x + badge.width).toBe(spinner.x)
+    expect(spinner.x + spinner.width).toBeLessThanOrEqual(row.x + row.width)
+    expect(badge.y).toBe(row.y)
+    expect(badge.x + badge.width).toBeLessThanOrEqual(row.x + row.width)
+    expect(line.indexOf("merging")).toBeGreaterThan(line.indexOf("#450"))
+  } finally {
+    rmSync(hold, { force: true })
+    setup.renderer.destroy()
+    process.env.PATH = oldPath
+    process.env.WORKFOREST_HOME = oldHome
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test.serial("worktree menu runs an idle worktree and stops one that is already running", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-menu-run-")))
   const oldHome = process.env.WORKFOREST_HOME
