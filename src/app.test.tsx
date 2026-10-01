@@ -1327,7 +1327,7 @@ process.exit(child.exitCode ?? 1)
   }
 })
 
-test.serial("merge shows a spinner beside the worktree until it finishes or fails", async () => {
+test.serial("merge shows a spinner beside the PR number until it finishes or fails", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "wf-merge-spin-")))
   const oldHome = process.env.WORKFOREST_HOME
   const oldPath = process.env.PATH
@@ -1385,7 +1385,7 @@ else if (args[1] === "merge") {
     for (let i = 0; i < 40 && !findById(setup.renderer.root, "pr-link-450"); i++) await paint(setup)
     expect(findById(setup.renderer.root, "pr-link-450")).toBeTruthy()
     await openMerge()
-    expect(nameLine()).toMatch(/merge-feature [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
+    expect(nameLine()).toMatch(/merge-feature #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
     expect(spinnerOn(mainLine())).toBeUndefined()
     expect(mainLine()).not.toContain("merging")
     expect(setup.captureCharFrame()).toContain("merging PR #450")
@@ -1395,10 +1395,13 @@ else if (args[1] === "merge") {
     expect(spinner.y).toBe(row.y)
     expect(spinner.height).toBe(1)
     expect(spinner.x).toBeGreaterThanOrEqual(row.x)
-    expect(spinner.x + spinner.width).toBeLessThanOrEqual(badge.x)
+    expect(spinner.plainText).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging$/)
+    expect(badge.x + badge.width).toBe(spinner.x)
+    expect(spinner.x + spinner.width).toBeLessThanOrEqual(row.x + row.width)
     expect(badge.y).toBe(row.y)
     expect(badge.x + badge.width).toBeLessThanOrEqual(row.x + row.width)
-    expect(spinner.fg.equals(RGBA.fromHex(theme.selectedFg))).toBe(true)
+    const badgeLabel = badge.getChildren().find((child): child is TextRenderable => child instanceof TextRenderable)!
+    expect(spinner.fg.equals(badgeLabel.fg)).toBe(true)
     const first = spinnerOn(nameLine())
     let next = first
     for (let i = 0; i < 8 && next === first; i++) {
@@ -1419,7 +1422,7 @@ else if (args[1] === "merge") {
 
     writeFileSync(modeFile, "ok")
     await openMerge()
-    expect(nameLine()).toMatch(/merge-feature [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
+    expect(nameLine()).toMatch(/merge-feature #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
     for (let i = 0; i < 50 && !setup.captureCharFrame().includes("merged PR #450"); i++) {
       await Bun.sleep(50)
       await paint(setup)
@@ -1471,13 +1474,17 @@ else process.exit(0)
     const merge = findById(setup.renderer.root, "btn-merge-pr")!
     await setup.mockMouse.click(merge.x + 1, merge.y)
     await paint(setup)
-    const line = setup.captureCharFrame().split("\n").find((row) => row.includes("merging #450")) ?? ""
-    expect(line).toMatch(/merge\.\.\. [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging #450/)
+    const line = setup.captureCharFrame().split("\n").find((row) => /#450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/.test(row)) ?? ""
+    expect(line).toMatch(/\.\.\..* #450 [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging/)
     const row = findById(setup.renderer.root, `tree-row-${tree.path}`) as BoxRenderable
+    const spinner = findById(setup.renderer.root, "merge-spinner") as TextRenderable
     const badge = findById(setup.renderer.root, "pr-link-450") as BoxRenderable
+    expect(spinner.plainText).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] merging$/)
+    expect(badge.x + badge.width).toBe(spinner.x)
+    expect(spinner.x + spinner.width).toBeLessThanOrEqual(row.x + row.width)
     expect(badge.y).toBe(row.y)
     expect(badge.x + badge.width).toBeLessThanOrEqual(row.x + row.width)
-    expect(line.indexOf("merging")).toBeLessThan(line.indexOf("#450"))
+    expect(line.indexOf("merging")).toBeGreaterThan(line.indexOf("#450"))
   } finally {
     rmSync(hold, { force: true })
     setup.renderer.destroy()

@@ -124,13 +124,13 @@ export function TreePane(props: Props) {
             const lifted = () => dragging() && props.drag.state()?.path === key
             const drop = () => props.drag.state()?.target?.path === key ? props.drag.state()?.target : null
             const rowFg = () => lifted() ? theme.muted : selected() ? theme.selectedFg : theme.text
+            const prFg = () => props.blocked ? theme.muted : tree().prState === "OPEN" ? theme.danger : tree().prState === "MERGED" ? theme.selectedFg : theme.text
             const title = () => {
               const [indicator, ...statusParts] = serverStatus(serversForWorktree(props.servers, tree().path)).split(" ")
               const status = statusParts.join(" ")
               const frame = spinnerFrames[spinnerFrame()]
               const activity = props.shipping?.path === tree().path
                 ? ` ${frame}${props.shipping.text.trim() ? ` ${props.shipping.text.trim()}` : ""}`
-                : props.mergingPath === tree().path ? ` ${frame} merging`
                 : props.pullingPath === tree().path ? ` ${frame} pulling`
                 : ""
               return `${indicator} ${tree().displayName}${tree().isMain ? "  (main)" : ""}${activity}${tree().dirty ? "  *" : ""}${status ? `  ${status}` : ""}`
@@ -156,12 +156,17 @@ export function TreePane(props: Props) {
               }}
             >
               <box height={1} flexDirection="row" minWidth={0}>
-                <text id={props.mergingPath === key ? "merge-spinner" : undefined} height={1} flexShrink={1} minWidth={0} wrapMode="none" truncate overflow="hidden" fg={rowFg()} selectable={false}>{`${selected() ? "▶" : " "} ${title()}`}</text>
+                <text height={1} flexShrink={1} minWidth={0} wrapMode="none" truncate overflow="hidden" fg={rowFg()} selectable={false}>{`${selected() ? "▶" : " "} ${title()}`}</text>
                 <Show when={tree().pr}>{(pr: () => PullRequest) =>
-                  <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact underlined backgroundColor={rowBg()}
-                    variant={tree().prState === "OPEN" ? "danger" : tree().prState === "MERGED" ? "accent" : "default"}
-                    disabled={props.blocked} onPress={() => props.on.openPR(pr().url)}
-                    onContextMenu={(x, y) => props.on.prMenu(tree(), pr(), x, y)} />
+                  <>
+                    <ActionButton id={`pr-link-${pr().number}`} label={`#${pr().number}`} compact underlined backgroundColor={rowBg()}
+                      variant={tree().prState === "OPEN" ? "danger" : tree().prState === "MERGED" ? "accent" : "default"}
+                      disabled={props.blocked} onPress={() => props.on.openPR(pr().url)}
+                      onContextMenu={(x, y) => props.on.prMenu(tree(), pr(), x, y)} />
+                    <Show when={props.mergingPath === key}>
+                      <text id="merge-spinner" height={1} flexShrink={0} wrapMode="none" fg={prFg()} selectable={false}>{`${spinnerFrames[spinnerFrame()]} merging`}</text>
+                    </Show>
+                  </>
                 }</Show>
               </box>
               <Show when={selected()}>
